@@ -58,3 +58,6 @@ Desktop.ini
 # 3D model files in resource
 !resource/**/*.obj
 
+
+# Python test and scratch scripts
+*.py
