@@ -1,0 +1,42 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D sceneColor;
+layout(binding = 1, rgba16f) uniform image2D outImage;
+
+layout(push_constant) uniform PushConstants {
+    float threshold;
+    float softThreshold;
+    vec2 texelSize;
+    float invSPP;
+} params;
+
+void main() {
+    ivec2 destSize = imageSize(outImage);
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= destSize.x || pos.y >= destSize.y) return;
+
+    vec2 uv = (vec2(pos) + 0.5) / vec2(destSize);
+    vec2 halfTexel = params.texelSize * 0.5;
+
+    // 4-tap box filter downsample
+    vec3 c0 = texture(sceneColor, uv + vec2(-halfTexel.x, -halfTexel.y)).rgb;
+    vec3 c1 = texture(sceneColor, uv + vec2( halfTexel.x, -halfTexel.y)).rgb;
+    vec3 c2 = texture(sceneColor, uv + vec2(-halfTexel.x,  halfTexel.y)).rgb;
+    vec3 c3 = texture(sceneColor, uv + vec2( halfTexel.x,  halfTexel.y)).rgb;
+    vec3 color = (c0 + c1 + c2 + c3) * 0.25 * params.invSPP;
+
+    if (any(isnan(color)) || any(isinf(color))) {
+        color = vec3(0.0);
+    }
+    color = clamp(color, 0.0, 100.0);
+
+    float brightness = dot(color, vec3(0.2126, 0.7152, 0.0722));
+
+    float soft = brightness - params.threshold + params.softThreshold;
+    soft = clamp(soft / (2.0 * params.softThreshold + 0.00001), 0.0, 1.0);
+    soft = soft * soft;
+
+    float contribution = max(soft, step(params.threshold, brightness));
+    imageStore(outImage, pos, vec4(color * contribution, 1.0));
+}

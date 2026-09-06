@@ -1,0 +1,666 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : enable
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Accumulation buffer (stores sum of RGB radiance and accumulated SPP)
+layout(set = 0, binding = 0, rgba32f) uniform image2D u_AccumImage;
+
+// BVH Nodes
+struct GPUBVHNode {
+    vec4 aabbMinAndLeft;  // xyz = aabbMin, w = leftChild (internal) or primStart (leaf)
+    vec4 aabbMaxAndCount; // xyz = aabbMax, w = primCount (0 if internal, >0 if leaf)
+};
+layout(std430, set = 0, binding = 1) readonly buffer BVHBuffer {
+    GPUBVHNode bvhNodes[];
+};
+
+// Triangles
+struct GPUTriangle {
+    vec4 v0;      // xyz = v0, w = materialId
+    vec4 v1;      // xyz = v1, w = objectId
+    vec4 v2;      // xyz = v2, w = 0
+    vec4 n0;      // xyz = n0, w = uv0.x
+    vec4 n1;      // xyz = n1, w = uv0.y
+    vec4 n2;      // xyz = n2, w = uv1.x
+    vec4 uv12;    // x = uv1.y, y = uv2.x, z = uv2.y, w = 0
+    vec4 tangent; // xyz = tangent, w = bitangentSign (+1 or -1)
+};
+layout(std430, set = 0, binding = 2) readonly buffer TriangleBuffer {
+    GPUTriangle triangles[];
+};
+
+// Materials
+struct GPUMaterial {
+    vec4 albedoAndType;        // xyz = albedo, w = type (0=diffuse, 1=metal, 2=glass, 3=emissive)
+    vec4 emissionAndIntensity; // xyz = emission color, w = intensity
+    vec4 params;               // x = roughness, y = metallic, z = ior, w = transmission
+    ivec4 texIndices;          // x = albedoTexIdx, y = roughnessTexIdx, z = normalTexIdx, w = unused (-1 if none)
+    vec4 texScales;            // x = normalScale, y = roughnessScale, z = 0, w = 0
+};
+layout(std430, set = 0, binding = 3) readonly buffer MaterialBuffer {
+    GPUMaterial materials[];
+};
+
+// Emissive light triangle indices
+layout(std430, set = 0, binding = 4) readonly buffer LightBuffer {
+    int lightTriangles[];
+};
+
+// Textures array (Binding 5)
+layout(set = 0, binding = 5) uniform sampler2D u_Textures[64];
+
+// Atmosphere & Sky UBO (Binding 6)
+layout(std140, set = 0, binding = 6) uniform SkyParams {
+    vec4 sunDirAndIntensity; // xyz = sunDir, w = sunIntensity
+    vec4 atmosphereParams;  // x = skyMode (0=const, 1=Nishita), y = rayleighScale, z = mieTurbidity, w = sunAngularSize
+    vec4 groundAlbedo;      // xyz = groundAlbedo, w = unused
+} u_Sky;
+
+// Primary Normal & Depth G-Buffer (Binding 7)
+layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D u_NormalDepthImage;
+
+layout(push_constant) uniform PushConstants {
+    vec4 camPos;        // xyz = pos, w = fov (rad)
+    vec4 camFront;      // xyz = front, w = aperture
+    vec4 camRight;      // xyz = right, w = focusDist
+    vec4 camUp;         // xyz = up, w = maxBounces
+    uvec4 renderParams; // x = width, y = height, z = frameIndex (accumulated samples), w = samplesPerFrame
+    vec4 envAndTone;    // xyz = envColor * envIntensity, w = tonemapMode (unused)
+    vec4 postParams;    // x = gamma, y = exposure, z = randomSeed, w = numLightTriangles
+} u_Push;
+
+#define PI 3.14159265358979323846
+
+#include "nishita_sky.glsl"
+
+// ==================== Random Number Generation (PCG4D + QMC) ====================
+uvec4 g_RngState;
+
+// JCGT 2020 Hash Functions for GPU Rendering: pcg4d
+uvec4 pcg4d(uvec4 v) {
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.w;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v.w += v.y * v.z;
+    v ^= v >> 16u;
+    v.x += v.y * v.w;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v.w += v.y * v.z;
+    return v;
+}
+
+// Strictly [0, 1) float with uniform 24-bit precision, mathematically cannot return 1.0
+float randF() {
+    g_RngState = pcg4d(g_RngState);
+    return float(g_RngState.x >> 8u) * (1.0 / 16777216.0);
+}
+
+vec2 randF2() {
+    g_RngState = pcg4d(g_RngState);
+    return vec2(float(g_RngState.x >> 8u), float(g_RngState.y >> 8u)) * (1.0 / 16777216.0);
+}
+
+// Duff et al. (2017) continuous branchless orthonormal basis
+void buildOrthonormalBasis(vec3 n, out vec3 b1, out vec3 b2) {
+    float s = n.z >= 0.0 ? 1.0 : -1.0;
+    float a = -1.0 / (s + n.z);
+    float b = n.x * n.y * a;
+    b1 = vec3(1.0 + s * n.x * n.x * a, s * b, -s * n.x);
+    b2 = vec3(b, s + n.y * n.y * a, -n.y);
+}
+
+vec3 cosineSampleHemisphere(vec3 normal) {
+    vec2 r = randF2();
+    float phi = 2.0 * PI * r.x;
+    float cosTheta = sqrt(1.0 - r.y);
+    float sinTheta = sqrt(r.y);
+
+    vec3 tangent, bitangent;
+    buildOrthonormalBasis(normal, tangent, bitangent);
+
+    return normalize(tangent * (cos(phi) * sinTheta) +
+                     bitangent * (sin(phi) * sinTheta) +
+                     normal * cosTheta);
+}
+
+// R2 Low-Discrepancy (Quasi-Monte Carlo) Sequence for Subpixel Jitter
+vec2 r2Sequence(uint n, vec2 scramble) {
+    vec2 alpha = vec2(0.7548776662466927, 0.5698402909980532);
+    return fract(float(n + 1u) * alpha + scramble);
+}
+
+// ==================== Intersections ====================
+
+bool intersectAABB(vec3 origin, vec3 invDir, vec3 bMin, vec3 bMax, float tMaxCurrent) {
+    vec3 t0 = (bMin - origin) * invDir;
+    vec3 t1 = (bMax - origin) * invDir;
+    vec3 tSmall = min(t0, t1);
+    vec3 tBig = max(t0, t1);
+    float tNear = max(max(tSmall.x, tSmall.y), tSmall.z);
+    float tFar = min(min(tBig.x, tBig.y), tBig.z);
+    return (tFar >= tNear) && (tFar > 0.0005) && (tNear < tMaxCurrent);
+}
+
+bool intersectTriangle(vec3 origin, vec3 dir, vec3 v0, vec3 v1, vec3 v2, inout float t, out float u, out float v) {
+    vec3 edge1 = v1 - v0;
+    vec3 edge2 = v2 - v0;
+    vec3 pvec = cross(dir, edge2);
+    float det = dot(edge1, pvec);
+    if (abs(det) < 1e-7) return false;
+    float invDet = 1.0 / det;
+
+    vec3 tvec = origin - v0;
+    float hitU = dot(tvec, pvec) * invDet;
+    if (hitU < 0.0 || hitU > 1.0) return false;
+
+    vec3 qvec = cross(tvec, edge1);
+    float hitV = dot(dir, qvec) * invDet;
+    if (hitV < 0.0 || hitU + hitV > 1.0) return false;
+
+    float hitT = dot(edge2, qvec) * invDet;
+    if (hitT > 0.0005 && hitT < t) {
+        t = hitT;
+        u = hitU;
+        v = hitV;
+        return true;
+    }
+    return false;
+}
+
+struct HitRecord {
+    float t;
+    vec3 p;
+    vec3 normal;
+    vec3 geoNormal;
+    vec2 uv;
+    vec4 tangent;
+    int materialId;
+    int triangleId;
+    bool frontFace;
+    bool hit;
+};
+
+HitRecord intersectScene(vec3 rayOrigin, vec3 rayDir, float maxDist) {
+    HitRecord hit;
+    hit.t = maxDist;
+    hit.hit = false;
+    hit.materialId = 0;
+    hit.triangleId = -1;
+    hit.uv = vec2(0.0);
+    hit.tangent = vec4(1.0, 0.0, 0.0, 1.0);
+
+    vec3 invDir = 1.0 / (rayDir + sign(rayDir) * 1e-8);
+
+    int stack[64];
+    int stackPtr = 0;
+    stack[stackPtr++] = 0; // Root node
+
+    while (stackPtr > 0) {
+        int nodeIdx = stack[--stackPtr];
+        GPUBVHNode node = bvhNodes[nodeIdx];
+        vec3 bMin = node.aabbMinAndLeft.xyz;
+        vec3 bMax = node.aabbMaxAndCount.xyz;
+        float primStartOrLeft = node.aabbMinAndLeft.w;
+        float primCount = node.aabbMaxAndCount.w;
+
+        if (!intersectAABB(rayOrigin, invDir, bMin, bMax, hit.t)) {
+            continue;
+        }
+
+        if (primCount > 0.5) { // Leaf node
+            int start = int(primStartOrLeft);
+            int count = int(primCount);
+            for (int i = 0; i < count; ++i) {
+                int triIdx = start + i;
+                GPUTriangle tri = triangles[triIdx];
+                float u, v;
+                if (intersectTriangle(rayOrigin, rayDir, tri.v0.xyz, tri.v1.xyz, tri.v2.xyz, hit.t, u, v)) {
+                    hit.hit = true;
+                    hit.triangleId = triIdx;
+                    hit.p = rayOrigin + rayDir * hit.t;
+                    vec3 n = normalize((1.0 - u - v) * tri.n0.xyz + u * tri.n1.xyz + v * tri.n2.xyz);
+                    vec3 gn = normalize(cross(tri.v1.xyz - tri.v0.xyz, tri.v2.xyz - tri.v0.xyz));
+                    hit.geoNormal = gn;
+                    hit.frontFace = dot(rayDir, gn) < 0.0;
+                    hit.normal = hit.frontFace ? n : -n;
+                    hit.materialId = int(tri.v0.w);
+
+                    vec2 uv0 = vec2(tri.n0.w, tri.n1.w);
+                    vec2 uv1 = vec2(tri.n2.w, tri.uv12.x);
+                    vec2 uv2 = vec2(tri.uv12.y, tri.uv12.z);
+                    hit.uv = (1.0 - u - v) * uv0 + u * uv1 + v * uv2;
+                    hit.tangent = tri.tangent;
+                }
+            }
+        } else { // Internal node
+            int leftIdx = int(primStartOrLeft);
+            int rightIdx = int(-primCount);
+            stack[stackPtr++] = leftIdx;
+            stack[stackPtr++] = rightIdx;
+        }
+    }
+    return hit;
+}
+
+// Shadow ray for NEE (occlusion test)
+bool isOccluded(vec3 origin, vec3 target, float dist) {
+    vec3 dir = (target - origin) / dist;
+    vec3 invDir = 1.0 / (dir + sign(dir) * 1e-8);
+    float hitT = dist - 0.001;
+
+    int stack[64];
+    int stackPtr = 0;
+    stack[stackPtr++] = 0;
+
+    while (stackPtr > 0) {
+        int nodeIdx = stack[--stackPtr];
+        GPUBVHNode node = bvhNodes[nodeIdx];
+        vec3 bMin = node.aabbMinAndLeft.xyz;
+        vec3 bMax = node.aabbMaxAndCount.xyz;
+        float primStartOrLeft = node.aabbMinAndLeft.w;
+        float primCount = node.aabbMaxAndCount.w;
+
+        if (!intersectAABB(origin, invDir, bMin, bMax, hitT)) {
+            continue;
+        }
+
+        if (primCount > 0.5) {
+            int start = int(primStartOrLeft);
+            int count = int(primCount);
+            for (int i = 0; i < count; ++i) {
+                int triIdx = start + i;
+                GPUTriangle tri = triangles[triIdx];
+                float u, v;
+                if (intersectTriangle(origin, dir, tri.v0.xyz, tri.v1.xyz, tri.v2.xyz, hitT, u, v)) {
+                    // Check if hit object is emissive
+                    int mId = int(tri.v0.w);
+                    GPUMaterial mat = materials[mId];
+                    if (mat.albedoAndType.w == 3.0 || mat.emissionAndIntensity.w > 0.01) {
+                        continue; // Pass through lights
+                    }
+                    return true;
+                }
+            }
+        } else {
+            stack[stackPtr++] = int(primStartOrLeft);
+            stack[stackPtr++] = int(-primCount);
+        }
+    }
+    return false;
+}
+
+// Fresnel Schlick for Dielectrics
+float fresnelSchlick(float cosTheta, float refIdx) {
+    float r0 = (1.0 - refIdx) / (1.0 + refIdx);
+    r0 = r0 * r0;
+    return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+}
+
+// ==================== GGX Microfacet & MIS ====================
+
+float D_GGX(float NdotH, float roughness) {
+    float a = max(0.001, roughness * roughness);
+    float a2 = a * a;
+    float d = (NdotH * a2 - NdotH) * NdotH + 1.0;
+    return a2 / (PI * d * d + 1e-7);
+}
+
+float G1_Smith(float NdotV, float k) {
+    return NdotV / (NdotV * (1.0 - k) + k + 1e-7);
+}
+
+float G2_Smith(float NdotV, float NdotL, float roughness) {
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+    return G1_Smith(NdotV, k) * G1_Smith(NdotL, k);
+}
+
+vec3 F_Schlick(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+vec3 sampleGGX(vec3 N, vec3 V, float roughness, out vec3 H, out float pdf) {
+    float a = max(0.001, roughness * roughness);
+    vec2 r = randF2();
+
+    float phi = 2.0 * PI * r.x;
+    float cosTheta = sqrt((1.0 - r.y) / (1.0 + (a * a - 1.0) * r.y));
+    float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+
+    vec3 Hlocal = vec3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
+
+    vec3 tangent, bitangent;
+    buildOrthonormalBasis(N, tangent, bitangent);
+
+    H = normalize(tangent * Hlocal.x + bitangent * Hlocal.y + N * Hlocal.z);
+    if (dot(V, H) < 0.0) H = -H;
+
+    vec3 L = reflect(-V, H);
+
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+    float D = D_GGX(NdotH, roughness);
+    pdf = (D * NdotH) / (4.0 * VdotH + 1e-7);
+
+    return L;
+}
+
+float evalGGX_PDF(vec3 N, vec3 V, vec3 L, float roughness) {
+    vec3 H = normalize(V + L);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+    if (NdotH <= 0.0 || VdotH <= 0.0) return 0.0;
+    float D = D_GGX(NdotH, roughness);
+    return (D * NdotH) / (4.0 * VdotH + 1e-7);
+}
+
+vec3 evalGGX_BRDF(vec3 N, vec3 V, vec3 L, float roughness, vec3 F0) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    if (NdotV <= 0.0 || NdotL <= 0.0) return vec3(0.0);
+
+    vec3 H = normalize(V + L);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+
+    float D = D_GGX(NdotH, roughness);
+    float G = G2_Smith(NdotV, NdotL, roughness);
+    vec3 F = F_Schlick(VdotH, F0);
+
+    return (D * F * G) / (4.0 * NdotV * NdotL + 1e-7);
+}
+
+// ==================== Path Tracing Kernel ====================
+
+vec3 sampleRay(vec3 rayOrigin, vec3 rayDir, out vec3 primaryNormal, out float primaryDepth) {
+    vec3 radiance = vec3(0.0);
+    vec3 throughput = vec3(1.0);
+    int maxBounces = int(u_Push.camUp.w);
+    int numLights = int(u_Push.postParams.w);
+    float lastBsdfPdf = -1.0;
+
+    primaryNormal = vec3(0.0);
+    primaryDepth = 10000.0;
+
+    for (int bounce = 0; bounce < maxBounces; ++bounce) {
+        HitRecord hit = intersectScene(rayOrigin, rayDir, 1000.0);
+
+        if (!hit.hit) {
+            // Environment lighting
+            if (u_Sky.atmosphereParams.x > 0.5) {
+                vec3 sky = EvaluateNishitaSky(rayDir, u_Sky.sunDirAndIntensity.xyz, u_Sky.sunDirAndIntensity.w,
+                                              u_Sky.atmosphereParams.y, u_Sky.atmosphereParams.z,
+                                              u_Sky.atmosphereParams.w, u_Sky.groundAlbedo.xyz);
+                radiance += throughput * sky;
+            } else {
+                radiance += throughput * u_Push.envAndTone.xyz;
+            }
+            break;
+        }
+
+        GPUMaterial mat = materials[hit.materialId];
+        vec3 albedo = mat.albedoAndType.xyz;
+        int matType = int(mat.albedoAndType.w);
+        vec3 emission = mat.emissionAndIntensity.xyz * mat.emissionAndIntensity.w;
+        float roughness = clamp(mat.params.x, 0.001, 1.0);
+        float metallic = clamp(mat.params.y, 0.0, 1.0);
+        float ior = mat.params.z > 0.1 ? mat.params.z : 1.5;
+
+        // Apply normal map if available
+        vec3 N = hit.normal;
+        int normTex = mat.texIndices.z;
+        if (normTex >= 0 && normTex < 64) {
+            vec3 T = normalize(hit.tangent.xyz);
+            T = normalize(T - dot(T, N) * N);
+            vec3 B = cross(N, T) * hit.tangent.w;
+            mat3 TBN = mat3(T, B, N);
+
+            vec3 nSample = texture(u_Textures[nonuniformEXT(normTex)], hit.uv).rgb * 2.0 - 1.0;
+            nSample.xy *= mat.texScales.x;
+            N = normalize(TBN * nSample);
+        }
+
+        // Apply roughness map if available
+        int roughTex = mat.texIndices.y;
+        if (roughTex >= 0 && roughTex < 64) {
+            float rSample = texture(u_Textures[nonuniformEXT(roughTex)], hit.uv).r;
+            roughness = clamp(roughness * rSample * mat.texScales.y, 0.001, 1.0);
+        }
+
+        // Apply albedo map if available
+        int albTex = mat.texIndices.x;
+        if (albTex >= 0 && albTex < 64) {
+            albedo *= texture(u_Textures[nonuniformEXT(albTex)], hit.uv).rgb;
+        }
+
+        // Primary hit G-Buffer for denoiser
+        if (bounce == 0) {
+            primaryNormal = N;
+            primaryDepth = hit.t;
+        }
+
+        // 1. Direct emission from hit surface (with MIS for bounce >= 1)
+        if (length(emission) > 0.001) {
+            if (bounce == 0 || lastBsdfPdf < 0.0 || numLights <= 0) {
+                radiance += throughput * emission;
+            } else {
+                // Evaluate light sampling PDF for this hit
+                float distSq = hit.t * hit.t;
+                float cosLight = abs(dot(-rayDir, hit.geoNormal));
+                GPUTriangle hitTri = triangles[hit.triangleId];
+                float lightArea = 0.5 * length(cross(hitTri.v1.xyz - hitTri.v0.xyz, hitTri.v2.xyz - hitTri.v0.xyz));
+                float lightPdf = distSq / (max(lightArea, 1e-4) * max(cosLight, 1e-4) * float(max(numLights, 1)));
+
+                // Multiple Importance Sampling (Balance Heuristic)
+                float misWeight = lastBsdfPdf / (lastBsdfPdf + lightPdf);
+                radiance += throughput * emission * misWeight;
+            }
+            break;
+        }
+
+        vec3 V = -rayDir;
+        float NdotV = max(dot(N, V), 0.0);
+
+        // 2. Next Event Estimation (Direct Light Sampling with MIS)
+        if (numLights > 0 && matType != 2 && matType != 3) {
+            int lightPick = int(randF() * float(numLights)) % numLights;
+            int lightTriIdx = lightTriangles[lightPick];
+            GPUTriangle ltri = triangles[lightTriIdx];
+
+            vec2 rLight = randF2();
+            float r1 = rLight.x;
+            float r2 = rLight.y;
+            float sqr1 = sqrt(r1);
+            vec3 lightPt = (1.0 - sqr1) * ltri.v0.xyz + (sqr1 * (1.0 - r2)) * ltri.v1.xyz + (sqr1 * r2) * ltri.v2.xyz;
+            vec3 lightNormal = normalize(cross(ltri.v1.xyz - ltri.v0.xyz, ltri.v2.xyz - ltri.v0.xyz));
+            float lightArea = 0.5 * length(cross(ltri.v1.xyz - ltri.v0.xyz, ltri.v2.xyz - ltri.v0.xyz));
+
+            vec3 toLight = lightPt - hit.p;
+            float distSq = dot(toLight, toLight);
+            float dist = sqrt(distSq);
+            vec3 L = toLight / dist;
+
+            float cosTheta = dot(N, L);
+            float cosLight = abs(dot(-L, lightNormal));
+
+            if (cosTheta > 0.0 && cosLight > 0.001) {
+                vec3 shadowOrigin = hit.p + N * 0.001;
+                if (!isOccluded(shadowOrigin, lightPt, dist)) {
+                    GPUMaterial lmat = materials[int(ltri.v0.w)];
+                    vec3 lEmission = lmat.emissionAndIntensity.xyz * lmat.emissionAndIntensity.w;
+                    float lightPdf = distSq / (max(lightArea, 1e-4) * cosLight * float(numLights));
+
+                    float bsdfPdf = 0.0;
+                    vec3 f_bsdf = vec3(0.0);
+
+                    if (matType == 0) {
+                        // Diffuse Lambertian
+                        bsdfPdf = cosTheta / PI;
+                        f_bsdf = albedo / PI;
+                    } else if (matType == 1) {
+                        // GGX Metal
+                        vec3 F0 = mix(vec3(0.04), albedo, metallic);
+                        bsdfPdf = evalGGX_PDF(N, V, L, roughness);
+                        f_bsdf = evalGGX_BRDF(N, V, L, roughness, F0);
+                    }
+
+                    // Balance Heuristic MIS weight
+                    float misWeight = lightPdf / (lightPdf + bsdfPdf);
+                    vec3 direct = throughput * f_bsdf * cosTheta * (lEmission / max(lightPdf, 1e-5)) * misWeight;
+                    radiance += direct;
+                }
+            }
+        }
+
+        // 3. BSDF Scatter & Importance Sampling
+        vec3 nextDir;
+        if (matType == 0) {
+            // Diffuse (Cosine-weighted hemisphere sampling)
+            nextDir = cosineSampleHemisphere(N);
+            float cosTheta = max(dot(N, nextDir), 0.0);
+            lastBsdfPdf = cosTheta / PI;
+            throughput *= albedo;
+        } else if (matType == 1) {
+            // Metal (GGX microfacet importance sampling)
+            vec3 H;
+            float ggxPdf;
+            nextDir = sampleGGX(N, V, roughness, H, ggxPdf);
+            float NdotL = dot(N, nextDir);
+            if (NdotL <= 0.0 || ggxPdf <= 1e-7) break;
+
+            vec3 F0 = mix(vec3(0.04), albedo, metallic);
+            float VdotH = max(dot(V, H), 0.0);
+            float NdotH = max(dot(N, H), 0.0);
+            vec3 F = F_Schlick(VdotH, F0);
+            float G = G2_Smith(NdotV, NdotL, roughness);
+
+            vec3 weight = F * (G * VdotH / max(1e-5, NdotV * NdotH));
+            throughput *= weight;
+            lastBsdfPdf = ggxPdf;
+        } else if (matType == 2) {
+            // Glass (Dielectric - Delta distribution)
+            float eta = hit.frontFace ? (1.0 / ior) : ior;
+            float cosTheta = min(dot(V, N), 1.0);
+            float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+
+            bool cannotRefract = (eta * sinTheta) > 1.0;
+            float reflectProb = fresnelSchlick(cosTheta, eta);
+
+            if (cannotRefract || reflectProb > randF()) {
+                nextDir = reflect(rayDir, N);
+            } else {
+                nextDir = refract(rayDir, N, eta);
+            }
+            throughput *= albedo;
+            lastBsdfPdf = -1.0; // Delta distribution has no MIS with light sampling
+        } else {
+            break;
+        }
+
+        // Russian Roulette path termination
+        if (bounce >= 3) {
+            float pSurvive = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.05, 0.95);
+            if (randF() > pSurvive) {
+                break;
+            }
+            throughput /= pSurvive;
+        }
+
+        rayOrigin = hit.p + nextDir * 0.001;
+        rayDir = nextDir;
+    }
+
+    return radiance;
+}
+
+// ==================== Tone Mapping ====================
+vec3 acesToneMapping(vec3 color) {
+    float a = 2.51;
+    float b = 0.03;
+    float c = 2.43;
+    float d = 0.59;
+    float e = 0.14;
+    return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
+}
+
+vec3 reinhardToneMapping(vec3 color) {
+    return color / (color + vec3(1.0));
+}
+
+void main() {
+    uvec2 pixelCoord = gl_GlobalInvocationID.xy;
+    uint width = u_Push.renderParams.x;
+    uint height = u_Push.renderParams.y;
+
+    if (pixelCoord.x >= width || pixelCoord.y >= height) {
+        return;
+    }
+
+    uint frameIndex = u_Push.renderParams.z;
+    uint samplesPerFrame = u_Push.renderParams.w;
+
+    // Seed RNG with PCG4D high-entropy avalanche hash
+    uint hostSeed = floatBitsToUint(u_Push.postParams.z);
+    g_RngState = pcg4d(uvec4(pixelCoord.x, pixelCoord.y, frameIndex, hostSeed));
+
+    // Per-pixel scramble for Cranley-Patterson rotation
+    vec2 pixelScramble = vec2(float(g_RngState.z >> 8u), float(g_RngState.w >> 8u)) * (1.0 / 16777216.0);
+
+    // Camera parameters
+    vec3 camPos = u_Push.camPos.xyz;
+    vec3 camFront = u_Push.camFront.xyz;
+    vec3 camRight = u_Push.camRight.xyz;
+    vec3 camUp = u_Push.camUp.xyz;
+    float fov = u_Push.camPos.w;
+    float aperture = u_Push.camFront.w;
+    float focusDist = u_Push.camRight.w;
+
+    float aspect = float(width) / float(height);
+    float halfHeight = tan(fov * 0.5);
+    float halfWidth = aspect * halfHeight;
+
+    vec3 sampleColorSum = vec3(0.0);
+    vec3 primaryNormal = vec3(0.0);
+    float primaryDepth = 10000.0;
+
+    for (uint s = 0; s < samplesPerFrame; ++s) {
+        uint sampleIndex = frameIndex + s;
+        vec2 jitter = r2Sequence(sampleIndex, pixelScramble) - 0.5;
+        float u = ((float(pixelCoord.x) + jitter.x) / float(width)) * 2.0 - 1.0;
+        float v = ((float(pixelCoord.y) + jitter.y) / float(height)) * 2.0 - 1.0;
+        v = -v; // Vulkan Y-flip
+
+        vec3 rayDir = normalize(camFront + camRight * (u * halfWidth) + camUp * (v * halfHeight));
+        vec3 rayOrigin = camPos;
+
+        // Thin-lens depth of field
+        if (aperture > 0.0001) {
+            vec3 focusPoint = rayOrigin + rayDir * focusDist;
+            vec2 lensUV = (randF2() * 2.0 - 1.0) * aperture;
+            rayOrigin += camRight * lensUV.x + camUp * lensUV.y;
+            rayDir = normalize(focusPoint - rayOrigin);
+        }
+
+        vec3 pN;
+        float pD;
+        sampleColorSum += sampleRay(rayOrigin, rayDir, pN, pD);
+        if (s == 0) {
+            primaryNormal = pN;
+            primaryDepth = pD;
+        }
+    }
+
+    // Accumulate radiance
+    ivec2 coord = ivec2(pixelCoord);
+    vec4 oldAccum = (frameIndex == 0) ? vec4(0.0) : imageLoad(u_AccumImage, coord);
+
+    float newTotalSPP = float(frameIndex + samplesPerFrame);
+    vec3 newAccumColor = oldAccum.xyz + sampleColorSum;
+    imageStore(u_AccumImage, coord, vec4(newAccumColor, newTotalSPP));
+
+    // Store primary hit G-Buffer for denoiser
+    imageStore(u_NormalDepthImage, coord, vec4(primaryNormal, primaryDepth));
+}

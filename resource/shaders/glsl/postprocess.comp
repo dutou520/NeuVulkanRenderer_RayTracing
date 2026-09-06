@@ -1,0 +1,71 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba32f) readonly uniform image2D accumImage;
+layout(binding = 1) uniform sampler2D bloomTexture;
+layout(binding = 2, rgba8) writeonly uniform image2D displayImage;
+
+layout(push_constant) uniform PushConstants {
+    float exposure;
+    float gamma;
+    int tonemapMode; // 0 = ACES, 1 = Reinhard, 2 = Linear
+    int bloomEnabled;
+    float bloomIntensity;
+    float invSPP;
+    int width;
+    int height;
+} params;
+
+// ACES Tone Mapping curve
+vec3 tonemapACES(vec3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+// Reinhard Tone Mapping
+vec3 tonemapReinhard(vec3 x) {
+    return x / (x + vec3(1.0));
+}
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= params.width || pos.y >= params.height) return;
+
+    vec4 accum = imageLoad(accumImage, pos);
+    float spp = max(accum.w, 1.0);
+    vec3 hdrColor = accum.rgb * params.invSPP;
+
+    if (any(isnan(hdrColor)) || any(isinf(hdrColor))) {
+        hdrColor = vec3(0.0);
+    }
+
+    // Bloom additive blend
+    if (params.bloomEnabled != 0) {
+        vec2 uv = (vec2(pos) + 0.5) / vec2(params.width, params.height);
+        vec3 bloomColor = texture(bloomTexture, uv).rgb;
+        hdrColor += bloomColor * params.bloomIntensity;
+    }
+
+    // Exposure adjustment
+    hdrColor *= params.exposure;
+
+    // Tonemap
+    vec3 mapped = hdrColor;
+    if (params.tonemapMode == 0) {
+        mapped = tonemapACES(hdrColor);
+    } else if (params.tonemapMode == 1) {
+        mapped = tonemapReinhard(hdrColor);
+    } else {
+        mapped = clamp(hdrColor, 0.0, 1.0);
+    }
+
+    // Gamma correction
+    float g = params.gamma > 0.01 ? params.gamma : 2.2;
+    vec3 ldr = pow(clamp(mapped, 0.0, 1.0), vec3(1.0 / g));
+
+    imageStore(displayImage, pos, vec4(ldr, 1.0));
+}

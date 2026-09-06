@@ -1,0 +1,92 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Binding 0: Input accumulated HDR color (RGBA32F)
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D u_InputImage;
+
+// Binding 1: Primary Normal & Depth G-Buffer (xyz = normal, w = depth) (RGBA16F)
+layout(set = 0, binding = 1, rgba16f) uniform readonly image2D u_NormalDepthImage;
+
+// Binding 2: Output Denoised HDR Image (RGBA32F)
+layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D u_OutputImage;
+
+layout(push_constant) uniform DenoisePushConstants {
+    uvec4 resolutionAndStep; // x = width, y = height, z = stepSize (1, 2, 4), w = passIndex
+    vec4 filterParams;       // x = colorSigma, y = normalSigma, z = depthSigma, w = invSPP
+} u_Push;
+
+// B3-Spline 5x5 separable kernel weights
+const float kernel1D[5] = float[5](1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0);
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 res = ivec2(u_Push.resolutionAndStep.xy);
+
+    if (p.x >= res.x || p.y >= res.y) {
+        return;
+    }
+
+    vec4 centerVal = imageLoad(u_InputImage, p);
+    vec4 centerND = imageLoad(u_NormalDepthImage, p);
+
+    float centerSPP = max(1.0, centerVal.a);
+    vec3 centerColor = centerVal.rgb / centerSPP;
+    vec3 centerNormal = centerND.xyz;
+    float centerDepth = centerND.w;
+
+    // Void / Sky pixels without surface hit: pass through original color
+    if (centerDepth > 5000.0 || length(centerNormal) < 0.1) {
+        imageStore(u_OutputImage, p, centerVal);
+        return;
+    }
+
+    float centerLum = dot(centerColor, vec3(0.2126, 0.7152, 0.0722));
+
+    vec3 sumColor = vec3(0.0);
+    float sumWeight = 0.0;
+
+    int stepSize = int(max(1u, u_Push.resolutionAndStep.z));
+    float colorSigma = max(0.005, u_Push.filterParams.x);
+    float normalSigma = max(1.0, u_Push.filterParams.y);
+    float depthSigma = max(0.005, u_Push.filterParams.z * max(1.0, centerDepth));
+
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            ivec2 q = p + ivec2(dx, dy) * stepSize;
+            q = clamp(q, ivec2(0), res - 1);
+
+            vec4 sampleVal = imageLoad(u_InputImage, q);
+            vec4 sampleND = imageLoad(u_NormalDepthImage, q);
+
+            float sampleSPP = max(1.0, sampleVal.a);
+            vec3 sampleColor = sampleVal.rgb / sampleSPP;
+            vec3 sampleNormal = sampleND.xyz;
+            float sampleDepth = sampleND.w;
+
+            // 1. Spatial B3-Spline weight
+            float hWeight = kernel1D[dx + 2] * kernel1D[dy + 2];
+
+            // 2. Color / Luminance similarity weight
+            float sampleLum = dot(sampleColor, vec3(0.2126, 0.7152, 0.0722));
+            float lumDiff = abs(centerLum - sampleLum);
+            float wColor = exp(-lumDiff / colorSigma);
+
+            // 3. Surface normal similarity weight
+            float nDot = max(0.0, dot(centerNormal, sampleNormal));
+            float wNormal = pow(nDot, normalSigma);
+
+            // 4. Geometry depth distance weight
+            float depthDiff = abs(centerDepth - sampleDepth);
+            float wDepth = exp(-depthDiff / depthSigma);
+
+            float w = hWeight * wColor * wNormal * wDepth;
+
+            sumColor += sampleColor * w;
+            sumWeight += w;
+        }
+    }
+
+    vec3 finalColor = (sumWeight > 1e-4) ? (sumColor / sumWeight) : centerColor;
+    imageStore(u_OutputImage, p, vec4(finalColor * centerSPP, centerVal.a));
+}
