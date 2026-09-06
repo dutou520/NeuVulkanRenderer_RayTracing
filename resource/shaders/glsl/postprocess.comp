@@ -3,20 +3,23 @@ layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(binding = 0, rgba32f) readonly uniform image2D accumImage;
 layout(binding = 1) uniform sampler2D bloomTexture;
-layout(binding = 2, rgba8) writeonly uniform image2D displayImage;
+layout(binding = 2, rgba16f) writeonly uniform image2D displayImage;
 
 layout(push_constant) uniform PushConstants {
     float exposure;
     float gamma;
-    int tonemapMode; // 0 = ACES, 1 = Reinhard, 2 = Linear
+    int tonemapMode; // 0 = ACES, 1 = Reinhard, 2 = Linear, 3 = HDR Linear + Soft Knee
     int bloomEnabled;
     float bloomIntensity;
     float invSPP;
     int width;
     int height;
+    float peakLuminance;
+    float paperWhite;
+    float softKneeThreshold;
 } params;
 
-// ACES Tone Mapping curve
+// ACES Tone Mapping curve (SDR)
 vec3 tonemapACES(vec3 x) {
     const float a = 2.51;
     const float b = 0.03;
@@ -26,7 +29,7 @@ vec3 tonemapACES(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
-// Reinhard Tone Mapping
+// Reinhard Tone Mapping (SDR)
 vec3 tonemapReinhard(vec3 x) {
     return x / (x + vec3(1.0));
 }
@@ -53,19 +56,34 @@ void main() {
     // Exposure adjustment
     hdrColor *= params.exposure;
 
-    // Tonemap
-    vec3 mapped = hdrColor;
-    if (params.tonemapMode == 0) {
-        mapped = tonemapACES(hdrColor);
-    } else if (params.tonemapMode == 1) {
-        mapped = tonemapReinhard(hdrColor);
+    if (params.tonemapMode == 3) {
+        // HDR Linear + Soft Knee
+        float M = max(params.peakLuminance / max(params.paperWhite, 1.0), 1.0);
+        float t = M * clamp(params.softKneeThreshold, 0.5, 0.99);
+        vec3 mapped = max(hdrColor, vec3(0.0));
+        for (int i = 0; i < 3; ++i) {
+            if (mapped[i] > t) {
+                float diff = mapped[i] - t;
+                float span = max(M - t, 1e-4);
+                mapped[i] = t + span * tanh(diff / span);
+            }
+        }
+        imageStore(displayImage, pos, vec4(mapped, 1.0));
     } else {
-        mapped = clamp(hdrColor, 0.0, 1.0);
+        // SDR Tonemap modes
+        vec3 mapped = hdrColor;
+        if (params.tonemapMode == 0) {
+            mapped = tonemapACES(hdrColor);
+        } else if (params.tonemapMode == 1) {
+            mapped = tonemapReinhard(hdrColor);
+        } else {
+            mapped = clamp(hdrColor, 0.0, 1.0);
+        }
+
+        // Gamma correction
+        float g = params.gamma > 0.01 ? params.gamma : 2.2;
+        vec3 ldr = pow(clamp(mapped, 0.0, 1.0), vec3(1.0 / g));
+
+        imageStore(displayImage, pos, vec4(ldr, 1.0));
     }
-
-    // Gamma correction
-    float g = params.gamma > 0.01 ? params.gamma : 2.2;
-    vec3 ldr = pow(clamp(mapped, 0.0, 1.0), vec3(1.0 / g));
-
-    imageStore(displayImage, pos, vec4(ldr, 1.0));
 }

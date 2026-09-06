@@ -6,13 +6,18 @@
 #include "TextureManager.h"
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <json.hpp>
+#include <fstream>
+#include <filesystem>
+
+using json = nlohmann::json;
 
 namespace neurender {
 
 FileBrowser EditorGUI::s_FileBrowser;
 bool EditorGUI::s_ViewportHovered = false;
 char EditorGUI::s_CommandInputBuffer[512] = "";
-static bool s_DockSpaceInitialized = false;
+static bool s_ResetLayoutRequested = false;
 static bool s_IsCustomResolution = false;
 static int s_CustomWidth = 1280;
 static int s_CustomHeight = 720;
@@ -23,6 +28,7 @@ static bool s_ShowCameraSceneSettings = true;
 static bool s_ShowMaterialManager = true;
 static bool s_ShowFileBrowser = true;
 static bool s_ShowConsoleLog = true;
+static bool s_ShowAboutWindow = false;
 static std::string s_PendingFocusWindow = "";
 
 void EditorGUI::SetWindowFocus(const std::string& name) {
@@ -30,6 +36,7 @@ void EditorGUI::SetWindowFocus(const std::string& name) {
 }
 
 void EditorGUI::Init() {
+    LoadLayoutState();
     s_FileBrowser.SetFileSelectedCallback([](const std::string& path) {
         if (PathTracerCore::GetScene().LoadOBJ(path)) {
             PathTracerCore::GetCamera().ResetCornellBoxView();
@@ -40,6 +47,7 @@ void EditorGUI::Init() {
 }
 
 void EditorGUI::Shutdown() {
+    SaveLayoutState();
 }
 
 void EditorGUI::Render() {
@@ -88,6 +96,8 @@ void EditorGUI::Render() {
         }
         RenderConsoleLog();
     }
+
+    RenderAboutWindow();
 }
 
 void EditorGUI::SetupDockSpace() {
@@ -96,23 +106,29 @@ void EditorGUI::SetupDockSpace() {
     ImGui::SetNextWindowSize(viewport->WorkSize);
     ImGui::SetNextWindowViewport(viewport->ID);
 
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
+    // 移除 ImGuiWindowFlags_MenuBar，消除顶部菜单栏下方的空白行
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBackground;
     window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
     window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
 
+    ImGui::SetNextWindowBgAlpha(0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_DockingEmptyBg, ImVec4(0, 0, 0, 0));
     ImGui::Begin("DockSpaceWindow", nullptr, window_flags);
-    ImGui::PopStyleVar(3);
 
     ImGuiID dockspace_id = ImGui::GetID("PathTracerDockSpace");
-    ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_None;
+    ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode;
     ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
 
-    if (!s_DockSpaceInitialized) {
-        s_DockSpaceInitialized = true;
+    ImGuiDockNode* node = ImGui::DockBuilderGetNode(dockspace_id);
+    bool needInit = s_ResetLayoutRequested || (node == nullptr || node->IsEmpty());
+
+    if (needInit) {
+        s_ResetLayoutRequested = false;
         ImGui::DockBuilderRemoveNode(dockspace_id);
         ImGui::DockBuilderAddNode(dockspace_id, dockspace_flags | ImGuiDockNodeFlags_DockSpace);
         ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
@@ -132,6 +148,8 @@ void EditorGUI::SetupDockSpace() {
     }
 
     ImGui::End();
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
 }
 
 void EditorGUI::RenderMenuBar() {
@@ -226,14 +244,20 @@ void EditorGUI::RenderMenuBar() {
             ImGui::MenuItem("控制台与日志 (Console Log)", nullptr, &s_ShowConsoleLog);
             ImGui::Separator();
             if (ImGui::MenuItem("重置默认窗口布局 (Reset Layout)")) {
-                s_DockSpaceInitialized = false;
+                s_ResetLayoutRequested = true;
+                s_ShowViewport = true;
+                s_ShowRenderSettings = true;
+                s_ShowCameraSceneSettings = true;
+                s_ShowMaterialManager = true;
+                s_ShowFileBrowser = true;
+                s_ShowConsoleLog = true;
             }
             ImGui::EndMenu();
         }
 
         if (ImGui::BeginMenu("帮助 (Help)")) {
-            if (ImGui::MenuItem("关于 (About)")) {
-                LOG_I("NeuTracingRender: Vulkan Real-Time Path Tracer Demo.");
+            if (ImGui::MenuItem("关于 (About)...")) {
+                s_ShowAboutWindow = true;
             }
             ImGui::EndMenu();
         }
@@ -243,8 +267,12 @@ void EditorGUI::RenderMenuBar() {
 }
 
 void EditorGUI::RenderViewport() {
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.08f, 0.10f, 0.80f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::Begin("渲染视口 (Viewport)", &s_ShowViewport, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::Begin("渲染视口 (Viewport)", &s_ShowViewport,
+                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
 
     ImVec2 viewSize = ImGui::GetContentRegionAvail();
     ImTextureID texID = PathTracerCore::GetViewportTextureID();
@@ -261,7 +289,11 @@ void EditorGUI::RenderViewport() {
         }
         ImVec2 curPos = ImGui::GetCursorPos();
         ImGui::SetCursorPos(ImVec2(curPos.x + (viewSize.x - drawSize.x) * 0.5f, curPos.y + (viewSize.y - drawSize.y) * 0.5f));
-        ImGui::Image(texID, drawSize);
+        ImVec2 screenPos = ImGui::GetCursorScreenPos();
+        ImGuiIO& io = ImGui::GetIO();
+        PathTracerCore::SetViewportRect(screenPos.x, screenPos.y, screenPos.x + drawSize.x, screenPos.y + drawSize.y,
+                                        io.DisplaySize.x, io.DisplaySize.y);
+        ImGui::Dummy(drawSize);
     }
 
     s_ViewportHovered = ImGui::IsItemHovered();
@@ -295,6 +327,11 @@ void EditorGUI::RenderViewport() {
     ImGui::Text("分辨率: %dx%d", PathTracerCore::GetRenderWidth(), PathTracerCore::GetRenderHeight());
     ImGui::Text("帧率: %.1f FPS (%.2f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
     ImGui::Text("三角面数: %zu", PathTracerCore::GetScene().GetTriangles().size());
+    if (PathTracerCore::GetBackend() == RenderBackend::HardwareRTX_KHR) {
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "后端: 硬件 RTX (KHR RT)");
+    } else {
+        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "后端: 软件 BVH (Compute)");
+    }
     if (PathTracerCore::GetBloomEnabled()) {
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Bloom: 已开启 (强度 %.1f)", PathTracerCore::GetBloomIntensity());
     } else {
@@ -305,6 +342,7 @@ void EditorGUI::RenderViewport() {
 
     ImGui::End();
     ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
 }
 
 void EditorGUI::RenderRenderSettings() {
@@ -320,6 +358,28 @@ void EditorGUI::RenderRenderSettings() {
 
     if (ImGui::Button("重置累积 (Reset Accumulation)", ImVec2(-1, 30))) {
         PathTracerCore::ResetAccumulation();
+    }
+
+    ImGui::Separator();
+    ImGui::Text("渲染内核后端 (Ray Tracing Backend):");
+    int backendMode = (PathTracerCore::GetBackend() == RenderBackend::HardwareRTX_KHR) ? 1 : 0;
+    bool rtSupported = PathTracerCore::IsHardwareRTAvaliable();
+
+    if (ImGui::RadioButton("软件 BVH (Compute Shader)", &backendMode, 0)) {
+        PathTracerCore::SetBackend(RenderBackend::ComputeShader_BVH);
+    }
+    ImGui::SameLine();
+    if (!rtSupported) {
+        ImGui::BeginDisabled();
+    }
+    if (ImGui::RadioButton("硬件 RTX (KHR RT Pipeline)", &backendMode, 1)) {
+        PathTracerCore::SetBackend(RenderBackend::HardwareRTX_KHR);
+    }
+    if (!rtSupported) {
+        ImGui::EndDisabled();
+        ImGui::TextColored(ImVec4(0.8f, 0.4f, 0.4f, 1.0f), "(当前 GPU 不支持硬件光追扩展)");
+    } else {
+        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "(支持 NVIDIA RTX 硬件加速)");
     }
 
     ImGui::Separator();
@@ -455,14 +515,75 @@ void EditorGUI::RenderRenderSettings() {
         }
     }
 
+    // Display & HDR Output
+    ImGui::Separator();
+    ImGui::Text("显示器 HDR 输出 (Display & HDR)");
+
+    const char* hdrModeNames[] = {
+        "自动协商 (Auto: ScRGB -> HDR10 -> SDR)",
+        "强制 ScRGB (16位浮点线性)",
+        "强制 HDR10 (10位 BT.2020 PQ)",
+        "关闭 HDR (SDR 模式)"
+    };
+    int currentHdrMode = static_cast<int>(PathTracerCore::GetHDROutputMode());
+    if (ImGui::Combo("HDR 输出模式", &currentHdrMode, hdrModeNames, 4)) {
+        PathTracerCore::SetHDROutputMode(static_cast<HDROutputMode>(currentHdrMode));
+    }
+
+    bool hdrActive = PathTracerCore::IsHDROutputActive();
+    if (hdrActive) {
+        VkColorSpaceKHR cs = PathTracerCore::GetSwapchainColorSpace();
+        if (cs == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
+            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "● 硬件 HDR 输出: 已激活 (ScRGB FP16 线性)");
+        } else if (cs == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
+            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "● 硬件 HDR 输出: 已激活 (HDR10 BT.2020 PQ)");
+        } else {
+            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "● 硬件 HDR 输出: 已激活");
+        }
+    } else {
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "○ 硬件 HDR 输出: 未激活 (SDR 模式)");
+    }
+
+    const auto &hdrInfo = HDRManager::GetCurrentInfo();
+    if (hdrInfo.isHDREnabled) {
+        ImGui::TextDisabled("检测到 Windows 系统 HDR: 开启 (物理峰值: %.1f nits)", hdrInfo.maxLuminance);
+    } else {
+        ImGui::TextDisabled("检测到 Windows 系统 HDR: 未开启/未探测");
+    }
+
+    if (hdrActive) {
+        float peakNits = PathTracerCore::GetPeakLuminanceNits();
+        if (ImGui::SliderFloat("显示器峰值亮度 (Peak Nits)", &peakNits, 300.0f, 2000.0f, "%.0f nits")) {
+            PathTracerCore::SetPeakLuminanceNits(peakNits);
+        }
+
+        float paperWhite = PathTracerCore::GetPaperWhiteNits();
+        if (ImGui::SliderFloat("UI 纸白参考亮度 (Paper White)", &paperWhite, 80.0f, 500.0f, "%.0f nits")) {
+            PathTracerCore::SetPaperWhiteNits(paperWhite);
+        }
+
+        float softKnee = PathTracerCore::GetSoftKneeThreshold();
+        if (ImGui::SliderFloat("高光软裁切阈值 (Soft Knee)", &softKnee, 0.50f, 0.99f, "%.2f")) {
+            PathTracerCore::SetSoftKneeThreshold(softKnee);
+        }
+    }
+
     // PostProcess Tone & Color
     ImGui::Separator();
     ImGui::Text("色调映射与后处理 (Color & Tone) [实时生效]");
 
-    const char* tonemapModes[] = { "ACES", "Reinhard", "Linear" };
-    int tm = PathTracerCore::GetTonemapMode();
-    if (ImGui::Combo("色调映射模式", &tm, tonemapModes, 3)) {
-        PathTracerCore::SetTonemapMode(tm);
+    if (hdrActive) {
+        const char* tonemapModes[] = { "ACES (SDR压缩)", "Reinhard (SDR压缩)", "Linear Clamp", "HDR 线性直通 + 软裁切 (推荐)" };
+        int tm = PathTracerCore::GetTonemapMode();
+        if (ImGui::Combo("色调映射模式", &tm, tonemapModes, 4)) {
+            PathTracerCore::SetTonemapMode(tm);
+        }
+    } else {
+        const char* tonemapModes[] = { "ACES", "Reinhard", "Linear" };
+        int tm = PathTracerCore::GetTonemapMode();
+        if (ImGui::Combo("色调映射模式", &tm, tonemapModes, 3)) {
+            PathTracerCore::SetTonemapMode(tm);
+        }
     }
 
     float exposure = PathTracerCore::GetExposure();
@@ -476,8 +597,15 @@ void EditorGUI::RenderRenderSettings() {
     }
 
     ImGui::Separator();
-    if (ImGui::Button("截取并保存图片 (Screenshot)", ImVec2(-1, 30))) {
-        PathTracerCore::RequestScreenshot("screenshot.png");
+    ImGui::Text("截图与图像导出 (Export Screenshot):");
+    if (ImGui::Button("保存视口为 HDR 辐射率图 (.hdr)", ImVec2(-1, 26))) {
+        PathTracerCore::RequestScreenshot("screenshot_viewport.hdr", false);
+    }
+    if (ImGui::Button("保存视口为 PNG 图片 (.png)", ImVec2(-1, 26))) {
+        PathTracerCore::RequestScreenshot("screenshot_viewport.png", false);
+    }
+    if (ImGui::Button("保存全屏编辑器 (带 UI)", ImVec2(-1, 26))) {
+        PathTracerCore::RequestScreenshot("screenshot_editor.png", true);
     }
 
     ImGui::End();
@@ -949,6 +1077,117 @@ void EditorGUI::RenderConsoleLog() {
     }
 
     ImGui::End();
+}
+
+void EditorGUI::RenderAboutWindow() {
+    if (!s_ShowAboutWindow) return;
+
+    ImGui::SetNextWindowSize(ImVec2(720, 560), ImGuiCond_FirstUseEver);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse;
+    if (ImGui::Begin("关于 (About)##AboutWindow", &s_ShowAboutWindow, flags)) {
+        ImGui::TextColored(ImVec4(0.2f, 0.8f, 1.0f, 1.0f), "NeuTracingRender (NeuVulkanRenderer_RayTracing)");
+        ImGui::TextDisabled("版本: v0.1.0 | 基于 Vulkan Compute Shader 的物理路径追踪渲染器");
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::TextWrapped("一个基于现代化 C++17 编写的高性能实时/渐进式路径追踪渲染器，集成了物理材质系统 (PBR)、保边双边滤波降噪、多级物理泛光 (Bloom)、Nishita 1993 大气物理散射天空模型以及基于 Dear ImGui + SDL3 的实时编辑器。");
+        ImGui::Spacing();
+
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "GitHub 仓库地址 (Repository URL):");
+        const char* repoUrl = "https://github.com/dutou520/NeuVulkanRenderer_RayTracing.git";
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 140.0f);
+        ImGui::InputText("##RepoUrl", const_cast<char*>(repoUrl), strlen(repoUrl), ImGuiInputTextFlags_ReadOnly);
+        ImGui::SameLine();
+        if (ImGui::Button("复制链接 (Copy)", ImVec2(130, 0))) {
+            ImGui::SetClipboardText(repoUrl);
+            LOG_I("GitHub URL copied to clipboard: {}", repoUrl);
+        }
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "内置控制台命令说明 (Console Commands):");
+        ImGui::TextDisabled("可在底部 [控制台与日志] 面板的命令输入框中执行，或在启动终端控制台中键入:");
+
+        if (ImGui::BeginTable("CommandsTable", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0, 260))) {
+            ImGui::TableSetupColumn("命令名称", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+            ImGui::TableSetupColumn("用法语法 (Usage)", ImGuiTableColumnFlags_WidthFixed, 260.0f);
+            ImGui::TableSetupColumn("功能说明 (Description)", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            for (const auto& cmd : Console::s_Commands) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.25f, 1.0f), "%s", cmd.name.c_str());
+
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(cmd.usage.c_str());
+
+                ImGui::TableSetColumnIndex(2);
+                ImGui::TextUnformatted(cmd.description.c_str());
+            }
+            ImGui::EndTable();
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::Button("关闭 (Close)", ImVec2(120, 0))) {
+            s_ShowAboutWindow = false;
+        }
+    }
+    ImGui::End();
+}
+
+void EditorGUI::LoadLayoutState() {
+    try {
+        if (!std::filesystem::exists("gui_layout.json")) return;
+        std::ifstream file("gui_layout.json");
+        if (!file.is_open()) return;
+        json j;
+        file >> j;
+        if (j.contains("show_viewport")) s_ShowViewport = j["show_viewport"].get<bool>();
+        if (j.contains("show_render_settings")) s_ShowRenderSettings = j["show_render_settings"].get<bool>();
+        if (j.contains("show_camera_scene")) s_ShowCameraSceneSettings = j["show_camera_scene"].get<bool>();
+        if (j.contains("show_material_manager")) s_ShowMaterialManager = j["show_material_manager"].get<bool>();
+        if (j.contains("show_file_browser")) s_ShowFileBrowser = j["show_file_browser"].get<bool>();
+        if (j.contains("show_console_log")) s_ShowConsoleLog = j["show_console_log"].get<bool>();
+        if (j.contains("ui_scale")) {
+            float scale = j["ui_scale"].get<float>();
+            if (scale >= 0.5f && scale <= 3.0f) {
+                ImGui::GetIO().FontGlobalScale = scale;
+            }
+        }
+        LOG_I("Loaded GUI layout state from gui_layout.json");
+    } catch (const std::exception& e) {
+        LOG_W("Failed to load GUI layout state: {}", e.what());
+    }
+}
+
+void EditorGUI::SaveLayoutState() {
+    try {
+        json j;
+        j["show_viewport"] = s_ShowViewport;
+        j["show_render_settings"] = s_ShowRenderSettings;
+        j["show_camera_scene"] = s_ShowCameraSceneSettings;
+        j["show_material_manager"] = s_ShowMaterialManager;
+        j["show_file_browser"] = s_ShowFileBrowser;
+        j["show_console_log"] = s_ShowConsoleLog;
+        j["ui_scale"] = ImGui::GetIO().FontGlobalScale;
+
+        std::ofstream file("gui_layout.json");
+        if (file.is_open()) {
+            file << j.dump(4);
+            LOG_I("Saved GUI layout state to gui_layout.json");
+        }
+    } catch (const std::exception& e) {
+        LOG_W("Failed to save GUI layout state: {}", e.what());
+    }
+
+    if (ImGui::GetCurrentContext() && ImGui::GetIO().IniFilename) {
+        ImGui::SaveIniSettingsToDisk(ImGui::GetIO().IniFilename);
+    }
 }
 
 } // namespace neurender

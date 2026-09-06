@@ -1,0 +1,137 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+#include "rt_common.glsl"
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
+layout(set = 0, binding = 1, rgba32f) uniform image2D u_AccumImage;
+layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D u_NormalDepthImage;
+
+layout(location = 0) rayPayloadEXT RayPayload prd;
+
+layout(push_constant) uniform PushConstants {
+    vec4 camPos;
+    vec4 camFront;
+    vec4 camRight;
+    vec4 camUp;
+    uvec4 renderParams;
+    vec4 envAndTone;
+    vec4 postParams;
+} u_Push;
+
+vec2 r2Sequence(uint n, vec2 scramble) {
+    vec2 alpha = vec2(0.7548776662466927, 0.5698402909980532);
+    return fract(float(n + 1u) * alpha + scramble);
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_LaunchIDEXT.xy);
+    uint width = u_Push.renderParams.x;
+    uint height = u_Push.renderParams.y;
+
+    if (pixelCoord.x >= width || pixelCoord.y >= height) return;
+
+    uint frameIndex = u_Push.renderParams.z;
+    uint samplesPerFrame = u_Push.renderParams.w;
+    int maxBounces = int(u_Push.camUp.w);
+
+    uint seed = floatBitsToUint(u_Push.postParams.z);
+    uvec4 pixelRng = uvec4(uint(pixelCoord.x), uint(pixelCoord.y), frameIndex, seed);
+
+    vec3 camPos = u_Push.camPos.xyz;
+    float fovRad = u_Push.camPos.w;
+    vec3 camFront = u_Push.camFront.xyz;
+    float aperture = u_Push.camFront.w;
+    vec3 camRight = u_Push.camRight.xyz;
+    float focusDist = u_Push.camRight.w;
+    vec3 camUp = u_Push.camUp.xyz;
+
+    float aspect = float(width) / float(height);
+    float halfHeight = tan(fovRad * 0.5);
+    float halfWidth = aspect * halfHeight;
+
+    vec3 totalRadiance = vec3(0.0);
+    vec3 firstNormal = vec3(0.0);
+    float firstDepth = 10000.0;
+
+    for (uint s = 0; s < samplesPerFrame; ++s) {
+        uint sampleIdx = frameIndex * samplesPerFrame + s;
+        vec2 scramble = randF2(pixelRng);
+        vec2 jitter = r2Sequence(sampleIdx, scramble) - 0.5;
+
+        float u = (float(pixelCoord.x) + 0.5 + jitter.x) / float(width);
+        float v = (float(pixelCoord.y) + 0.5 + jitter.y) / float(height);
+
+        float screenX = (2.0 * u - 1.0) * halfWidth;
+        float screenY = (1.0 - 2.0 * v) * halfHeight;
+
+        vec3 rayOrigin = camPos;
+        vec3 rayDir = normalize(camFront + camRight * screenX + camUp * screenY);
+
+        if (aperture > 0.0) {
+            vec2 rDisk = randF2(pixelRng);
+            float r = sqrt(rDisk.x) * aperture;
+            float theta = 2.0 * PI * rDisk.y;
+            vec3 offset = camRight * (r * cos(theta)) + camUp * (r * sin(theta));
+
+            vec3 focalPoint = camPos + rayDir * focusDist;
+            rayOrigin += offset;
+            rayDir = normalize(focalPoint - rayOrigin);
+        }
+
+        // Initialize Ray Payload
+        prd.radiance = vec3(0.0);
+        prd.throughput = vec3(1.0);
+        prd.lastBsdfPdf = -1.0;
+        prd.hitAndTerm = 0u;
+        prd.primaryNormal = vec3(0.0);
+        prd.primaryDepth = 10000.0;
+        prd.rngState = pixelRng;
+
+        for (int bounce = 0; bounce < maxBounces; ++bounce) {
+            prd.hitAndTerm = 0u;
+            // sbtRecordOffset = 0 (Hit group index determined by instance record offset in TLAS)
+            traceRayEXT(topLevelAS,
+                        gl_RayFlagsOpaqueEXT,
+                        0xFF, 0, 0, 0,
+                        rayOrigin, 0.0005, rayDir, 1000.0, 0);
+
+            pixelRng = prd.rngState;
+
+            bool isHit = (prd.hitAndTerm & 1u) != 0u;
+            bool terminate = (prd.hitAndTerm & 2u) != 0u;
+
+            if (bounce == 0 && s == 0) {
+                firstNormal = prd.primaryNormal;
+                firstDepth = prd.primaryDepth;
+            }
+
+            if (!isHit || terminate) {
+                break;
+            }
+
+            // Russian Roulette
+            if (bounce >= 3) {
+                float pSurvive = clamp(max(prd.throughput.r, max(prd.throughput.g, prd.throughput.b)), 0.05, 0.95);
+                if (randF(pixelRng) > pSurvive) {
+                    break;
+                }
+                prd.throughput /= pSurvive;
+            }
+
+            rayOrigin = prd.nextOrigin;
+            rayDir = prd.nextDirection;
+        }
+
+        totalRadiance += prd.radiance;
+    }
+
+    // Accumulate to image
+    vec4 prevColor = (frameIndex > 0) ? imageLoad(u_AccumImage, pixelCoord) : vec4(0.0);
+    vec4 newColor = prevColor + vec4(totalRadiance, float(samplesPerFrame));
+    imageStore(u_AccumImage, pixelCoord, newColor);
+
+    if (frameIndex == 0) {
+        imageStore(u_NormalDepthImage, pixelCoord, vec4(firstNormal, firstDepth));
+    }
+}

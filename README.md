@@ -12,15 +12,18 @@
 
 ## 核心特性
 
-### 1. GPU 路径追踪内核 (Compute Shader Core)
-- **通用硬件兼容**：采用纯 Vulkan Compute Shader 方案实现，不依赖硬件光追专有扩展（RTX Core），支持绝大多数支持 Vulkan 1.2+ 的主流 GPU。
+### 1. 双光线追踪内核后端 (Dual Ray Tracing Backends)
+- **硬件 RTX 光追管线 (KHR Ray Tracing Pipeline)**：基于 Vulkan `VK_KHR_ray_tracing_pipeline` 与 `VK_KHR_acceleration_structure`，利用现代 GPU（如 NVIDIA RTX / AMD RDNA2+）硬件 RT Core 加速光线求交与 BVH 遍历。
+- **通用 Compute Shader 软件光追**：纯计算着色器方案，内置 CPU SAH 扁平化 BVH，不依赖硬件光追专有扩展，可在几乎所有 Vulkan 1.2+ GPU 上流畅运行。
+- **运行时无缝热切换**：可在编辑器界面中一键切换渲染后端，方便对比验证硬件光追与软件光追性能与结果。
 - **渐进式采样与累加**：支持 Accumulation Buffer 渐进累加采样（SPP 累加计数），提供极佳的交互式预览与高清降噪出图体验。
 - **物理景深 (Depth of Field)**：支持可调光圈半径（Aperture）与对焦距离（Focus Distance）的真实薄透镜景深模拟。
-- **光线反弹与俄罗斯轮盘赌**：支持自定义最大反弹次数（Max Bounces）以及基于俄罗斯轮盘赌（Russian Roulette）的路径快速终止。
 
-### 2. 高效加速结构 (BVH Acceleration)
-- **SAH 启发式构建**：CPU 端基于表面积启发式（Surface Area Heuristic, SAH）构建高质量两叉树。
-- **GPU 扁平化遍历**：在 GPU 端将 BVH 压平为连续的 SSBO 存储结构，显著提高缓存局部性与遍历求交效率。
+### 2. 显示器原生硬件 HDR 输出 (Display Native HDR)
+- **宽色域与超高动态范围**：原生支持 Windows HDR 模式，自动协商或强制切换 **ScRGB (FP16 线性)** 与 **HDR10 (BT.2020 + ST 2084 PQ)** 输出。
+- **双层离屏混合架构**：通过专用 GPU 复合着色器（Composite Pass），将高动态 HDR 渲染视口与 SDR ImGui 用户界面高保真精准合成，杜绝 UI 亮化刺眼或视口变暗。
+- **动态物理标定调控**：支持白纸参考亮度（Paper White Nits）、峰值亮度（Peak Nits）与 Soft Knee 软膝高光滚降实时滑块调节。
+- **工业级 HDR 图像导出**：视口支持直接保存为 Radiance `.hdr` 高动态范围辐射率图，完美保留真实场景光照强度。
 
 ### 3. 基于物理的材质系统 (PBR Materials)
 - **多种材质模型**：
@@ -34,13 +37,13 @@
 - **Nishita 1993 大气散射天空**：支持太阳高度角（Elevation）、方位角（Azimuth）以及大气浑浊度参数实时调节。
 - **保边双边滤波降噪 (Edge-Avoiding Bilateral Denoise)**：利用法线、深度与颜色导向缓冲实现低采样下的快速去噪。
 - **多级物理泛光 (Physically Based Bloom)**：基于 Brightness Threshold -> 逐级 Downsample -> 逐级 Upsample 混合。
-- **色彩与色调映射 (Tone Mapping)**：支持 ACES Filmic、Reinhard 等多种色调映射算法，支持曝光度与 Gamma 实时调整。
+- **色彩与色调映射 (Tone Mapping)**：支持 ACES Filmic、Reinhard、线性 HDR 等多种算法，支持曝光度与 Gamma 实时调整。
 
 ### 5. 交互式编辑器与工具 (Editor & Tooling)
 - **Docking 布局与界面**：集成 Dear ImGui 与 SDL3，支持面板自由停靠、材质实时编辑、场景树管理。
 - **内置模型与文件浏览器**：自带 Wavefront OBJ 加载器与内置文件浏览器，支持一键切换预设康奈尔盒（Cornell Box）模型。
 - **双模式相机控制器**：支持第一人称自由漫游（WASD + QE + 鼠标右键）与观察视角（Orbit）。
-- **实用工具**：集成 spdlog 运行时控制台输出、一键高清截图保存（Screenshot to PNG）。
+- **实用工具**：集成 spdlog 运行时控制台输出、视口 HDR/PNG 一键截图导出。
 
 ---
 

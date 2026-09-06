@@ -5,7 +5,7 @@ if(NOT DEFINED VCPKG_TARGET_TRIPLET)
     set(VCPKG_TARGET_TRIPLET "x64-mingw-dynamic" CACHE STRING "Vcpkg target triplet")
 endif()
 
-project(NeuTracingRender VERSION 0.1.0 LANGUAGES C CXX)
+project(NeuTracingRender VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,6 +35,18 @@ if(GLSLC_EXE)
         bloom_downsample.comp
         bloom_upsample.comp
         denoise.comp
+        composite.vert
+        composite.frag
+    )
+
+    set(RT_SHADER_NAMES
+        raytrace.rgen
+        raytrace.rmiss
+        raytrace_shadow.rmiss
+        raytrace_diffuse.rchit
+        raytrace_metal.rchit
+        raytrace_glass.rchit
+        raytrace_emissive.rchit
     )
 
     set(ALL_SPV_SHADERS "")
@@ -47,6 +59,19 @@ if(GLSLC_EXE)
             COMMAND ${GLSLC_EXE} -I "${CMAKE_SOURCE_DIR}/resource/shaders/glsl" ${SRC_S} -o ${DST_S}
             DEPENDS ${SRC_S} "${CMAKE_SOURCE_DIR}/resource/shaders/glsl/nishita_sky.glsl"
             COMMENT "Compiling shader ${sname} -> ${sname}.spv"
+        )
+        list(APPEND ALL_SPV_SHADERS ${DST_S})
+    endforeach()
+
+    foreach(sname ${RT_SHADER_NAMES})
+        set(SRC_S "${CMAKE_SOURCE_DIR}/resource/shaders/glsl/rt/${sname}")
+        set(DST_S "${CMAKE_SOURCE_DIR}/resource/shaders/compiled/${sname}.spv")
+        add_custom_command(
+            OUTPUT ${DST_S}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/resource/shaders/compiled"
+            COMMAND ${GLSLC_EXE} --target-env=vulkan1.2 -I "${CMAKE_SOURCE_DIR}/resource/shaders/glsl" -I "${CMAKE_SOURCE_DIR}/resource/shaders/glsl/rt" ${SRC_S} -o ${DST_S}
+            DEPENDS ${SRC_S} "${CMAKE_SOURCE_DIR}/resource/shaders/glsl/rt/rt_common.glsl" "${CMAKE_SOURCE_DIR}/resource/shaders/glsl/nishita_sky.glsl"
+            COMMENT "Compiling RT shader ${sname} -> ${sname}.spv"
         )
         list(APPEND ALL_SPV_SHADERS ${DST_S})
     endforeach()
@@ -67,6 +92,7 @@ set(SOURCES
     source/Scene.cpp
     source/PathTracerCore.cpp
     source/FileBrowser.cpp
+    source/HDRManager.cpp
     source/neuGUI.cpp
     source/Console.cpp
     source/imgui_impl_sdl3.cpp
@@ -96,9 +122,13 @@ target_link_libraries(NeuTracingRender PRIVATE
     glm::glm
 )
 
+if(WIN32)
+    target_link_libraries(NeuTracingRender PRIVATE dxgi ole32)
+endif()
+
 # Copy resource folder to binary directory
 add_custom_command(TARGET NeuTracingRender POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${CMAKE_SOURCE_DIR}/resource"
     "$<TARGET_FILE_DIR:NeuTracingRender>/resource"
     COMMENT "Copying resource directory to build output"

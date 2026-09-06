@@ -9,8 +9,14 @@
 #include "Camera.h"
 #include "Scene.h"
 #include "MaterialManager.h"
+#include "HDRManager.h"
 
 namespace neurender {
+
+enum class RenderBackend {
+    ComputeShader_BVH = 0,
+    HardwareRTX_KHR = 1
+};
 
 struct PushConstants {
     glm::vec4 camPos;        // xyz = pos, w = fov (rad)
@@ -27,6 +33,11 @@ public:
     static void Init();
     static void Shutdown();
     static void RenderFrame();
+
+    // Backend selection
+    static RenderBackend GetBackend() { return s_Backend; }
+    static void SetBackend(RenderBackend backend);
+    static bool IsHardwareRTAvaliable() { return s_HardwareRTSupported; }
 
     // Reset accumulation buffer
     static void ResetAccumulation();
@@ -115,6 +126,24 @@ public:
     static float GetUIScale() { return s_UIScale; }
     static void SetUIScale(float scale);
 
+    // Display & HDR Settings
+    static HDROutputMode GetHDROutputMode() { return s_HDROutputMode; }
+    static void SetHDROutputMode(HDROutputMode mode);
+    static VkColorSpaceKHR GetSwapchainColorSpace() { return s_SwapchainColorSpace; }
+    static VkFormat GetSwapchainFormat() { return s_SwapchainImageFormat; }
+    static bool IsHDROutputActive() { return s_IsHDROutputActive; }
+
+    static float GetPeakLuminanceNits() { return s_PeakLuminanceNits; }
+    static void SetPeakLuminanceNits(float nits) { s_PeakLuminanceNits = nits; }
+
+    static float GetPaperWhiteNits() { return s_PaperWhiteNits; }
+    static void SetPaperWhiteNits(float nits) { s_PaperWhiteNits = nits; }
+
+    static float GetSoftKneeThreshold() { return s_SoftKneeThreshold; }
+    static void SetSoftKneeThreshold(float t) { s_SoftKneeThreshold = t; }
+
+    static void SetViewportRect(float minX, float minY, float maxX, float maxY, float winW, float winH);
+
     // ImGui texture handle for viewport
     static ImTextureID GetViewportTextureID() { return s_ViewportTextureID; }
 
@@ -148,6 +177,18 @@ private:
     static void CreateComputePipeline();
     static void UpdateSSBOs();
     static void DispatchCompute(VkCommandBuffer cmd);
+
+    // Hardware Ray Tracing (VK_KHR_ray_tracing_pipeline)
+    static void InitHardwareRT();
+    static void ShutdownHardwareRT();
+    static void CreateRTPipeline();
+    static void DestroyRTPipeline();
+    static void CreateShaderBindingTable();
+    static void DestroyShaderBindingTable();
+    static void BuildAccelerationStructures();
+    static void DestroyAccelerationStructures();
+    static void DispatchHardwareRT(VkCommandBuffer cmd);
+    static VkDeviceAddress GetBufferDeviceAddress(VkBuffer buffer);
 
     // Post-Process & Bloom
     static void CreatePostProcessPipeline();
@@ -242,7 +283,36 @@ private:
     static VkExtent2D s_SwapchainExtent;
 
     static VkRenderPass s_UIRenderPass;
+    static VkRenderPass s_CompositeRenderPass;
     static std::vector<VkFramebuffer> s_SwapchainFramebuffers;
+
+    // HDR & Composite Pass objects
+    static HDROutputMode s_HDROutputMode;
+    static VkColorSpaceKHR s_SwapchainColorSpace;
+    static bool s_IsHDROutputActive;
+    static float s_PeakLuminanceNits;
+    static float s_PaperWhiteNits;
+    static float s_SoftKneeThreshold;
+    static glm::vec4 s_ViewportRect;
+
+    // Offscreen UI (SDR)
+    static VkImage s_UIOffscreenImage;
+    static VkDeviceMemory s_UIOffscreenMemory;
+    static VkImageView s_UIOffscreenView;
+    static VkFramebuffer s_UIFramebuffer;
+
+    // Composite Pipeline
+    static VkDescriptorSetLayout s_CompositeDescriptorSetLayout;
+    static VkPipelineLayout s_CompositePipelineLayout;
+    static VkPipeline s_CompositePipeline;
+    static VkDescriptorSet s_CompositeDescriptorSet;
+
+    static void CreateUIOffscreenResources();
+    static void DestroyUIOffscreenResources();
+    static void CreateCompositeRenderPass();
+    static void CreateCompositePipeline();
+    static void DestroyCompositePipeline();
+    static void UpdateCompositeDescriptorSets();
 
     static VkCommandPool s_CommandPool;
     static std::vector<VkCommandBuffer> s_CommandBuffers;
@@ -298,6 +368,41 @@ private:
     static VkDescriptorSet s_ComputeDescriptorSet;
     static VkPipelineLayout s_ComputePipelineLayout;
     static VkPipeline s_ComputePipeline;
+
+    // Hardware Ray Tracing objects
+    static bool s_HardwareRTSupported;
+    static RenderBackend s_Backend;
+
+    static VkPhysicalDeviceRayTracingPipelinePropertiesKHR s_RTProps;
+    static VkPhysicalDeviceAccelerationStructureFeaturesKHR s_ASFeatures;
+
+    static VkDescriptorSetLayout s_RTDescriptorSetLayout;
+    static VkDescriptorSet s_RTDescriptorSet;
+    static VkPipelineLayout s_RTPipelineLayout;
+    static VkPipeline s_RTPipeline;
+
+    // Acceleration Structures
+    static VkBuffer s_RTVertexBuffer;
+    static VkDeviceMemory s_RTVertexBufferMemory;
+
+    static VkBuffer s_BLASBuffer;
+    static VkDeviceMemory s_BLASBufferMemory;
+    static VkAccelerationStructureKHR s_BLAS;
+
+    static VkBuffer s_TLASBuffer;
+    static VkDeviceMemory s_TLASBufferMemory;
+    static VkAccelerationStructureKHR s_TLAS;
+
+    static VkBuffer s_InstanceBuffer;
+    static VkDeviceMemory s_InstanceBufferMemory;
+
+    // Shader Binding Table (SBT)
+    static VkBuffer s_SBTBuffer;
+    static VkDeviceMemory s_SBTBufferMemory;
+    static VkStridedDeviceAddressRegionKHR s_RaygenRegion;
+    static VkStridedDeviceAddressRegionKHR s_MissRegion;
+    static VkStridedDeviceAddressRegionKHR s_HitRegion;
+    static VkStridedDeviceAddressRegionKHR s_CallableRegion;
 
     // State & Parameters
     static Scene s_Scene;

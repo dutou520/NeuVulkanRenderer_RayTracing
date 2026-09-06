@@ -24,6 +24,9 @@ private:
     static void RenderMaterialManager();
     static void RenderFileBrowserPanel();
     static void RenderConsoleLog();
+    static void RenderAboutWindow();
+    static void LoadLayoutState();
+    static void SaveLayoutState();
 
     static FileBrowser s_FileBrowser;
     static bool s_ViewportHovered;
