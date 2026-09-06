@@ -6,7 +6,7 @@
 namespace neurender {
 
 FileBrowser::FileBrowser() {
-    std::string defaultPath = "D:/Download/3D_Models";
+    std::string defaultPath = "resource/models";
     if (std::filesystem::exists(std::filesystem::u8path(defaultPath))) {
         SetCurrentPath(defaultPath);
     } else {
@@ -63,8 +63,8 @@ void FileBrowser::Render() {
     ImGui::SameLine();
     ImGui::TextDisabled("| 快捷书签:");
     ImGui::SameLine();
-    if (ImGui::Button("3D_Models")) {
-        SetCurrentPath("D:/Download/3D_Models");
+    if (ImGui::Button("模型目录")) {
+        SetCurrentPath("resource/models");
     }
     ImGui::SameLine();
     if (ImGui::Button("材质贴图目录")) {

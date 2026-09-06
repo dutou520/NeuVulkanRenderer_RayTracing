@@ -54,3 +54,7 @@ imgui.ini
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# 3D model files in resource
+!resource/**/*.obj
+

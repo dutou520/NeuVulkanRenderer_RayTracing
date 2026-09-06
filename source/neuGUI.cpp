@@ -138,7 +138,7 @@ void EditorGUI::RenderMenuBar() {
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("文件 (File)")) {
             if (ImGui::MenuItem("加载康奈尔盒 (Load Cornell Box)")) {
-                PathTracerCore::GetScene().LoadOBJ("D:/Download/3D_Models/cornelbox.obj");
+                PathTracerCore::GetScene().LoadOBJ("resource/models/cornelbox.obj");
                 PathTracerCore::GetCamera().ResetCornellBoxView();
                 PathTracerCore::ResetAccumulation();
             }
