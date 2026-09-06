@@ -25,7 +25,9 @@
 *.app
 
 # Build directories
-build/
+build*/
+dist/
+*.zip
 bin/
 out/
 CMakeCache.txt
