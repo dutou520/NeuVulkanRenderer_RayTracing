@@ -16,6 +16,21 @@ struct TextureResource {
     VkImageView view = VK_NULL_HANDLE;
 };
 
+struct UIPreviewTexture {
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    std::string path;
+
+    bool IsValid() const {
+        return descriptorSet != VK_NULL_HANDLE && width > 0 && height > 0;
+    }
+};
+
 class TextureManager {
 public:
     static constexpr uint32_t MAX_TEXTURES = 64;
@@ -38,6 +53,10 @@ public:
     const TextureResource* GetTexture(int index) const;
 
     VkSampler GetSampler() const { return m_Sampler; }
+
+    // UI Preview texture (independent of compute shader texture slots)
+    UIPreviewTexture CreateUIPreviewTexture(const std::string& filepath);
+    void DestroyUIPreviewTexture(UIPreviewTexture& tex);
 
     // Fills an array of VkDescriptorImageInfo with MAX_TEXTURES entries for descriptor writes
     std::vector<VkDescriptorImageInfo> GetDescriptorImageInfos() const;

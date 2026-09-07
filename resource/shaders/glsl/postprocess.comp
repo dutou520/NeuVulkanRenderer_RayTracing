@@ -17,6 +17,8 @@ layout(push_constant) uniform PushConstants {
     float peakLuminance;
     float paperWhite;
     float softKneeThreshold;
+    int bloomBlendMode;           // 0 = Highlight-Preserving, 1 = Soft Screen, 2 = Smooth Envelope, 3 = Direct Additive
+    float bloomHighlightPreserve; // 0.0 ~ 2.0, default 1.0
 } params;
 
 // ACES Tone Mapping curve (SDR)
@@ -46,11 +48,32 @@ void main() {
         hdrColor = vec3(0.0);
     }
 
-    // Bloom additive blend
+    // Bloom blending
     if (params.bloomEnabled != 0) {
         vec2 uv = (vec2(pos) + 0.5) / vec2(params.width, params.height);
         vec3 bloomColor = texture(bloomTexture, uv).rgb;
-        hdrColor += bloomColor * params.bloomIntensity;
+        vec3 bloom = bloomColor * params.bloomIntensity;
+
+        if (params.bloomBlendMode == 0) {
+            // Mode 0: Highlight-Preserving Soft Blend (保高光自适应混合)
+            // 强光散射主要表现为向周围较暗区域漫散光晕，而在高光核心处抑制自加性过饱和，保护法线细节
+            float baseLum = max(dot(hdrColor, vec3(0.2126, 0.7152, 0.0722)), 0.0);
+            float preserveK = max(params.bloomHighlightPreserve, 0.0);
+            float weight = 1.0 / (1.0 + baseLum * preserveK * 0.5);
+            hdrColor += bloom * weight;
+        } else if (params.bloomBlendMode == 1) {
+            // Mode 1: HDR Soft Screen Blend (屏幕有理渐近软混合)
+            vec3 denom = max(hdrColor, vec3(1.0)) + bloom * max(params.bloomHighlightPreserve, 0.1);
+            hdrColor = hdrColor + bloom - (hdrColor * bloom) / denom;
+        } else if (params.bloomBlendMode == 2) {
+            // Mode 2: Smooth Envelope Fusion (平滑包络融合)
+            float k = 0.5 * max(params.bloomHighlightPreserve, 0.1);
+            vec3 h = clamp(0.5 + 0.5 * (bloom - hdrColor) / k, 0.0, 1.0);
+            hdrColor = mix(hdrColor, bloom, h) + k * h * (1.0 - h);
+        } else {
+            // Mode 3: Legacy Direct Additive (传统直接线性叠加)
+            hdrColor += bloom;
+        }
     }
 
     // Exposure adjustment

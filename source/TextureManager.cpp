@@ -7,6 +7,8 @@
 
 #include <cstring>
 #include <stdexcept>
+#include <filesystem>
+#include "imgui_impl_vulkan.h"
 
 namespace neurender {
 
@@ -315,6 +317,197 @@ uint32_t TextureManager::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFla
         }
     }
     throw std::runtime_error("Failed to find suitable memory type!");
+}
+
+UIPreviewTexture TextureManager::CreateUIPreviewTexture(const std::string& filepath) {
+    UIPreviewTexture preview{};
+    if (!m_Initialized || filepath.empty()) return preview;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(std::filesystem::u8path(filepath), ec)) {
+        return preview;
+    }
+
+    int w = 0, h = 0, channels = 0;
+    stbi_uc* pixels = stbi_load(filepath.c_str(), &w, &h, &channels, STBI_rgb_alpha);
+    if (!pixels || w <= 0 || h <= 0) {
+        if (pixels) stbi_image_free(pixels);
+        return preview;
+    }
+
+    VkDeviceSize imageSize = static_cast<VkDeviceSize>(w) * h * 4;
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+    try {
+        CreateBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     stagingBuffer, stagingMemory);
+    } catch (...) {
+        stbi_image_free(pixels);
+        return preview;
+    }
+
+    void* data = nullptr;
+    vkMapMemory(m_Device, stagingMemory, 0, imageSize, 0, &data);
+    memcpy(data, pixels, static_cast<size_t>(imageSize));
+    vkUnmapMemory(m_Device, stagingMemory);
+    stbi_image_free(pixels);
+
+    VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+
+    VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = static_cast<uint32_t>(w);
+    imageInfo.extent.height = static_cast<uint32_t>(h);
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = format;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+
+    if (vkCreateImage(m_Device, &imageInfo, nullptr, &preview.image) != VK_SUCCESS) {
+        vkDestroyBuffer(m_Device, stagingBuffer, nullptr);
+        vkFreeMemory(m_Device, stagingMemory, nullptr);
+        return preview;
+    }
+
+    VkMemoryRequirements memReqs;
+    vkGetImageMemoryRequirements(m_Device, preview.image, &memReqs);
+
+    VkMemoryAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    allocInfo.allocationSize = memReqs.size;
+    allocInfo.memoryTypeIndex = FindMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &preview.memory) != VK_SUCCESS) {
+        vkDestroyImage(m_Device, preview.image, nullptr);
+        preview.image = VK_NULL_HANDLE;
+        vkDestroyBuffer(m_Device, stagingBuffer, nullptr);
+        vkFreeMemory(m_Device, stagingMemory, nullptr);
+        return preview;
+    }
+    vkBindImageMemory(m_Device, preview.image, preview.memory, 0);
+
+    VkCommandBufferAllocateInfo cmdAlloc{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    cmdAlloc.commandPool = m_CommandPool;
+    cmdAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAlloc.commandBufferCount = 1;
+
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(m_Device, &cmdAlloc, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = preview.image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = { 0, 0, 0 };
+    region.imageExtent = { static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1 };
+
+    vkCmdCopyBufferToImage(cmd, stagingBuffer, preview.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo submitInfo{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(m_Queue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(m_Queue);
+
+    vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &cmd);
+    vkDestroyBuffer(m_Device, stagingBuffer, nullptr);
+    vkFreeMemory(m_Device, stagingMemory, nullptr);
+
+    VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    viewInfo.image = preview.image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &preview.view) != VK_SUCCESS) {
+        vkDestroyImage(m_Device, preview.image, nullptr);
+        vkFreeMemory(m_Device, preview.memory, nullptr);
+        preview.image = VK_NULL_HANDLE;
+        preview.memory = VK_NULL_HANDLE;
+        return preview;
+    }
+
+    preview.descriptorSet = ImGui_ImplVulkan_AddTexture(m_Sampler, preview.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    preview.width = w;
+    preview.height = h;
+    preview.channels = channels;
+    preview.path = filepath;
+
+    return preview;
+}
+
+void TextureManager::DestroyUIPreviewTexture(UIPreviewTexture& tex) {
+    if (!m_Initialized || tex.image == VK_NULL_HANDLE) {
+        return;
+    }
+    if (m_Device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(m_Device);
+
+        if (tex.descriptorSet != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(tex.descriptorSet);
+            tex.descriptorSet = VK_NULL_HANDLE;
+        }
+        if (tex.view != VK_NULL_HANDLE) {
+            vkDestroyImageView(m_Device, tex.view, nullptr);
+            tex.view = VK_NULL_HANDLE;
+        }
+        if (tex.image != VK_NULL_HANDLE) {
+            vkDestroyImage(m_Device, tex.image, nullptr);
+            tex.image = VK_NULL_HANDLE;
+        }
+        if (tex.memory != VK_NULL_HANDLE) {
+            vkFreeMemory(m_Device, tex.memory, nullptr);
+            tex.memory = VK_NULL_HANDLE;
+        }
+    }
+    tex.width = 0;
+    tex.height = 0;
+    tex.channels = 0;
+    tex.path.clear();
 }
 
 } // namespace neurender

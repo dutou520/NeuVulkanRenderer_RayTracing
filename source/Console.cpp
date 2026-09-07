@@ -251,9 +251,14 @@ void Console::Init() {
         return false;
     });
 
-    RegisterCommand("bloom", "bloom on | off | set <threshold|intensity|radius|soft> <val>", "配置 Bloom 泛光参数", [](const auto& args){
+    RegisterCommand("bloom", "bloom on | off | set <threshold|intensity|radius|soft|mode|preserve> <val>", "配置 Bloom 泛光参数", [](const auto& args){
         if (args.empty()) {
+            const char* modeNames[] = { "Highlight-Preserving", "Soft Screen", "Smooth Envelope", "Direct Additive" };
+            int m = PathTracerCore::GetBloomBlendMode();
+            const char* mName = (m >= 0 && m <= 3) ? modeNames[m] : "Unknown";
             Console::Print("Bloom status: " + std::string(PathTracerCore::GetBloomEnabled() ? "ON" : "OFF")
+                           + ", Mode=" + std::string(mName)
+                           + ", Preserve=" + std::to_string(PathTracerCore::GetBloomHighlightPreserve())
                            + ", Intensity=" + std::to_string(PathTracerCore::GetBloomIntensity())
                            + ", Threshold=" + std::to_string(PathTracerCore::GetBloomThreshold())
                            + ", Radius=" + std::to_string(PathTracerCore::GetBloomRadius()));
@@ -274,11 +279,13 @@ void Console::Init() {
                 else if (args[1] == "intensity") PathTracerCore::SetBloomIntensity(val);
                 else if (args[1] == "radius") PathTracerCore::SetBloomRadius(val);
                 else if (args[1] == "soft") PathTracerCore::SetBloomSoftThreshold(val);
+                else if (args[1] == "mode") PathTracerCore::SetBloomBlendMode(std::clamp(static_cast<int>(val), 0, 3));
+                else if (args[1] == "preserve") PathTracerCore::SetBloomHighlightPreserve(val);
                 Console::Print("Bloom " + args[1] + " set to " + std::to_string(val));
                 return true;
             }
         }
-        Console::Print("Usage: bloom on | off | set <threshold|intensity|radius|soft> <val>");
+        Console::Print("Usage: bloom on | off | set <threshold|intensity|radius|soft|mode|preserve> <val>");
         return false;
     });
 
@@ -394,6 +401,13 @@ void Console::Init() {
                     Console::Print("Updated material emission intensity.");
                     return true;
                 }
+            } else if (prop == "albedo_tex" || prop == "diffuse_tex") {
+                mat->albedoTexPath = args[3];
+                mat->albedoTexIdx = TextureManager::Instance().LoadTexture(mat->albedoTexPath, true);
+                matMgr.SetDirty(true);
+                PathTracerCore::ResetAccumulation();
+                Console::Print("Assigned albedo texture slot " + std::to_string(mat->albedoTexIdx));
+                return true;
             } else if (prop == "roughness_tex") {
                 mat->roughnessTexPath = args[3];
                 mat->roughnessTexIdx = TextureManager::Instance().LoadTexture(mat->roughnessTexPath);
@@ -423,7 +437,7 @@ void Console::Init() {
             Console::Print("Reset materials to Cornell Box defaults.");
             return true;
         }
-        Console::Print("Usage: material list | material set <name|id> <color|roughness|metallic|ior|emission|roughness_tex|normal_tex> <values...>");
+        Console::Print("Usage: material list | material set <name|id> <color|roughness|metallic|ior|emission|albedo_tex|roughness_tex|normal_tex> <values...>");
         return false;
     });
 

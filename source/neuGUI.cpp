@@ -47,6 +47,7 @@ void EditorGUI::Init() {
 }
 
 void EditorGUI::Shutdown() {
+    s_FileBrowser.Shutdown();
     SaveLayoutState();
 }
 
@@ -478,13 +479,31 @@ void EditorGUI::RenderRenderSettings() {
             }
 
             float bIntensity = PathTracerCore::GetBloomIntensity();
-            if (ImGui::SliderFloat("泛光强度 (Intensity)", &bIntensity, 0.0f, 3.0f, "%.2f")) {
+            if (ImGui::SliderFloat("泛光强度 (Intensity)", &bIntensity, 0.0f, 0.3f, "%.3f")) {
                 PathTracerCore::SetBloomIntensity(bIntensity);
             }
 
             float bRadius = PathTracerCore::GetBloomRadius();
             if (ImGui::SliderFloat("散射半径 (Radius)", &bRadius, 0.2f, 3.0f, "%.2f")) {
                 PathTracerCore::SetBloomRadius(bRadius);
+            }
+
+            const char* blendModes[] = {
+                "保留高光细节 (Highlight-Preserving)",
+                "HDR 屏幕软混合 (Soft Screen)",
+                "平滑光晕融合 (Smooth Envelope)",
+                "传统直接叠加 (Direct Additive)"
+            };
+            int curBlendMode = PathTracerCore::GetBloomBlendMode();
+            if (ImGui::Combo("混合方式 (Blend Mode)", &curBlendMode, blendModes, 4)) {
+                PathTracerCore::SetBloomBlendMode(curBlendMode);
+            }
+
+            if (curBlendMode != 3) {
+                float bPreserve = PathTracerCore::GetBloomHighlightPreserve();
+                if (ImGui::SliderFloat("高光保护强度 (Highlight Protection)", &bPreserve, 0.0f, 2.0f, "%.2f")) {
+                    PathTracerCore::SetBloomHighlightPreserve(bPreserve);
+                }
             }
         }
     }
@@ -873,6 +892,47 @@ void EditorGUI::RenderMaterialManager() {
     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "纹理与贴图 (Textures & Maps):");
 
     const std::string& selectedBrowserFile = s_FileBrowser.GetSelectedFile();
+
+    // Albedo / Base Color Texture
+    ImGui::Text("基础颜色/漫反射贴图 (Albedo / Base Color Map):");
+    if (ImGui::Button("加载当前选中的纹理##LoadAlbFromSel")) {
+        if (!selectedBrowserFile.empty()) {
+            mat->albedoTexPath = selectedBrowserFile;
+            mat->albedoTexIdx = TextureManager::Instance().LoadTexture(mat->albedoTexPath, true);
+            matMgr.SetDirty(true);
+            PathTracerCore::ResetAccumulation();
+        }
+    }
+    if (!selectedBrowserFile.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("已选: %s", selectedBrowserFile.c_str());
+    }
+
+    char albBuf[256];
+    strncpy(albBuf, mat->albedoTexPath.c_str(), sizeof(albBuf));
+    if (ImGui::InputText("漫反射贴图路径", albBuf, sizeof(albBuf))) {
+        mat->albedoTexPath = albBuf;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("加载##LoadAlb")) {
+        if (!mat->albedoTexPath.empty()) {
+            mat->albedoTexIdx = TextureManager::Instance().LoadTexture(mat->albedoTexPath, true);
+            matMgr.SetDirty(true);
+            PathTracerCore::ResetAccumulation();
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("清除##ClearAlb")) {
+        mat->albedoTexPath.clear();
+        mat->albedoTexIdx = -1;
+        matMgr.SetDirty(true);
+        PathTracerCore::ResetAccumulation();
+    }
+    if (mat->albedoTexIdx >= 0) {
+        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "漫反射贴图已绑定至槽位: %d", mat->albedoTexIdx);
+    }
+
+    ImGui::Spacing();
 
     // Roughness Texture
     ImGui::Text("粗糙度贴图 (Roughness Map):");

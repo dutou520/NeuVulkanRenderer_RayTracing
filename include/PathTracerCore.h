@@ -90,6 +90,10 @@ public:
     static void SetBloomIntensity(float i) { s_BloomIntensity = i; }
     static float GetBloomRadius() { return s_BloomRadius; }
     static void SetBloomRadius(float r) { s_BloomRadius = r; }
+    static int GetBloomBlendMode() { return s_BloomBlendMode; }
+    static void SetBloomBlendMode(int mode) { s_BloomBlendMode = mode; }
+    static float GetBloomHighlightPreserve() { return s_BloomHighlightPreserve; }
+    static void SetBloomHighlightPreserve(float val) { s_BloomHighlightPreserve = val; }
 
     // Denoiser Settings (Edge-Avoiding À-Trous / Guided Bilateral)
     static bool GetDenoiserEnabled() { return s_DenoiserEnabled; }
@@ -432,6 +436,8 @@ private:
     static float s_BloomSoftThreshold;
     static float s_BloomIntensity;
     static float s_BloomRadius;
+    static int s_BloomBlendMode;
+    static float s_BloomHighlightPreserve;
 
     static bool s_DenoiserEnabled;
     static int s_DenoiserPasses;

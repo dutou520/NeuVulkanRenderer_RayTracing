@@ -1,4 +1,5 @@
 #include "MaterialManager.h"
+#include "TextureManager.h"
 #include "neuLog.h"
 #include <json.hpp>
 #include <fstream>
@@ -162,6 +163,7 @@ bool MaterialManager::SaveToFile(const std::string& path) const {
             item["transmission"] = mat.transmission;
             item["emission"] = { mat.emission.r, mat.emission.g, mat.emission.b };
             item["emissionIntensity"] = mat.emissionIntensity;
+            item["albedoTexPath"] = mat.albedoTexPath;
             item["roughnessTexPath"] = mat.roughnessTexPath;
             item["normalTexPath"] = mat.normalTexPath;
             item["normalScale"] = mat.normalScale;
@@ -199,10 +201,22 @@ bool MaterialManager::LoadFromFile(const std::string& path) {
             auto emArr = item.value("emission", std::vector<float>{1.0f, 1.0f, 1.0f});
             if (emArr.size() >= 3) mat.emission = glm::vec3(emArr[0], emArr[1], emArr[2]);
             mat.emissionIntensity = item.value("emissionIntensity", 0.0f);
+            mat.albedoTexPath = item.value("albedoTexPath", "");
             mat.roughnessTexPath = item.value("roughnessTexPath", "");
             mat.normalTexPath = item.value("normalTexPath", "");
             mat.normalScale = item.value("normalScale", 1.0f);
             mat.roughnessScale = item.value("roughnessScale", 1.0f);
+
+            if (!mat.albedoTexPath.empty()) {
+                mat.albedoTexIdx = TextureManager::Instance().LoadTexture(mat.albedoTexPath, true);
+            }
+            if (!mat.roughnessTexPath.empty()) {
+                mat.roughnessTexIdx = TextureManager::Instance().LoadTexture(mat.roughnessTexPath, false);
+            }
+            if (!mat.normalTexPath.empty()) {
+                mat.normalTexIdx = TextureManager::Instance().LoadTexture(mat.normalTexPath, false);
+            }
+
             m_Materials.push_back(mat);
         }
         m_SelectedIndex = 0;

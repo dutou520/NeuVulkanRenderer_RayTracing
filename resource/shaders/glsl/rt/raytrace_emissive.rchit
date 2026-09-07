@@ -1,5 +1,6 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
+#extension GL_EXT_nonuniform_qualifier : enable
 
 #include "rt_common.glsl"
 
@@ -9,6 +10,7 @@ layout(location = 0) rayPayloadInEXT RayPayload prd;
 
 layout(std430, set = 0, binding = 2) readonly buffer TriangleBuffer { GPUTriangle triangles[]; };
 layout(std430, set = 0, binding = 3) readonly buffer MaterialBuffer { GPUMaterial materials[]; };
+layout(set = 0, binding = 5) uniform sampler2D u_Textures[64];
 
 layout(push_constant) uniform PushConstants {
     vec4 camPos;
@@ -34,6 +36,14 @@ void main() {
 
     GPUMaterial mat = materials[int(tri.v0.w)];
     vec3 emission = mat.emissionAndIntensity.xyz * mat.emissionAndIntensity.w;
+    int albTex = mat.texIndices.x;
+    if (albTex >= 0 && albTex < 64) {
+        vec2 uv0 = vec2(tri.n0.w, tri.n1.w);
+        vec2 uv1 = vec2(tri.n2.w, tri.uv12.x);
+        vec2 uv2 = vec2(tri.uv12.y, tri.uv12.z);
+        vec2 uv = w * uv0 + u * uv1 + v * uv2;
+        emission *= texture(u_Textures[nonuniformEXT(albTex)], uv).rgb;
+    }
 
     if (prd.primaryDepth > 9999.0) {
         prd.primaryNormal = N;

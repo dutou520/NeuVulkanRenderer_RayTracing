@@ -156,4 +156,29 @@ vec3 evalGGX_BRDF(vec3 N, vec3 V, vec3 L, float roughness, vec3 F0) {
     return (D * F * G) / (4.0 * NdotV * NdotL + 1e-7);
 }
 
+vec3 evalOrenNayar(vec3 N, vec3 V, vec3 L, float roughness, vec3 albedo) {
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotV = max(dot(N, V), 0.0);
+    if (NdotL <= 0.0 || NdotV <= 0.0) return vec3(0.0);
+
+    float sigma = roughness;
+    float sigma2 = sigma * sigma;
+    float A = 1.0 - 0.5 * (sigma2 / (sigma2 + 0.33));
+    float B = 0.45 * (sigma2 / (sigma2 + 0.09));
+
+    vec3 l_proj = L - N * NdotL;
+    vec3 v_proj = V - N * NdotV;
+    float lenL = length(l_proj);
+    float lenV = length(v_proj);
+    float cosPhiDiff = (lenL > 1e-5 && lenV > 1e-5) ? clamp(dot(l_proj, v_proj) / (lenL * lenV), -1.0, 1.0) : 0.0;
+
+    float thetaL = acos(clamp(NdotL, 0.0, 1.0));
+    float thetaV = acos(clamp(NdotV, 0.0, 1.0));
+    float alpha = max(thetaL, thetaV);
+    float beta = min(thetaL, thetaV);
+
+    float s = max(0.0, cosPhiDiff) * sin(alpha) * tan(beta);
+    return (albedo / PI) * (A + B * s);
+}
+
 #endif // RT_COMMON_GLSL

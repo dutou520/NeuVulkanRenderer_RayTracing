@@ -1,0 +1,9 @@
+{
+    "show_camera_scene": true,
+    "show_console_log": true,
+    "show_file_browser": true,
+    "show_material_manager": true,
+    "show_render_settings": true,
+    "show_viewport": true,
+    "ui_scale": 1.0
+}

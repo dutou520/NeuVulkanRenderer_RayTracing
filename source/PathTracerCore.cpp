@@ -217,6 +217,8 @@ float PathTracerCore::s_BloomThreshold = 1.0f;
 float PathTracerCore::s_BloomSoftThreshold = 0.5f;
 float PathTracerCore::s_BloomIntensity = 0.1f;
 float PathTracerCore::s_BloomRadius = 1.0f;
+int PathTracerCore::s_BloomBlendMode = 0;
+float PathTracerCore::s_BloomHighlightPreserve = 1.0f;
 
 VkImage PathTracerCore::s_NormalDepthImage = VK_NULL_HANDLE;
 VkDeviceMemory PathTracerCore::s_NormalDepthImageMemory = VK_NULL_HANDLE;
@@ -2006,7 +2008,7 @@ void PathTracerCore::CreatePostProcessPipeline() {
   VkPushConstantRange pushRange{};
   pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
   pushRange.offset = 0;
-  pushRange.size = 48; // 11 x 4 bytes (aligned to 48)
+  pushRange.size = 64; // 13 x 4 bytes (aligned to 64)
 
   VkPipelineLayoutCreateInfo pipelineLayoutInfo{
       VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -2118,6 +2120,8 @@ void PathTracerCore::DispatchPostProcess(VkCommandBuffer cmd) {
     float peakLuminance;
     float paperWhite;
     float softKneeThreshold;
+    int bloomBlendMode;
+    float bloomHighlightPreserve;
   } ppParams;
 
   ppParams.exposure = s_Exposure;
@@ -2131,6 +2135,8 @@ void PathTracerCore::DispatchPostProcess(VkCommandBuffer cmd) {
   ppParams.peakLuminance = s_PeakLuminanceNits;
   ppParams.paperWhite = s_PaperWhiteNits;
   ppParams.softKneeThreshold = s_SoftKneeThreshold;
+  ppParams.bloomBlendMode = s_BloomBlendMode;
+  ppParams.bloomHighlightPreserve = s_BloomHighlightPreserve;
 
   vkCmdPushConstants(cmd, s_PostProcessPipelineLayout,
                      VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ppParams),

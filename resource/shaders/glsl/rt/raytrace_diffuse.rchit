@@ -143,9 +143,20 @@ void main() {
                 vec3 f_bsdf = vec3(0.0);
 
                 if (matType == 0) {
-                    // Diffuse Lambertian
-                    bsdfPdf = cosTheta / PI;
-                    f_bsdf = albedo / PI;
+                    // Diffuse dielectric: Oren-Nayar rough diffuse + F0=0.04 GGX specular lobe
+                    vec3 F0 = vec3(0.04);
+                    vec3 H = normalize(V + L);
+                    float VdotH = max(dot(V, H), 0.0);
+                    vec3 F = F_Schlick(VdotH, F0);
+                    vec3 f_diff = evalOrenNayar(N, V, L, roughness, albedo) * (vec3(1.0) - F);
+                    vec3 f_spec = evalGGX_BRDF(N, V, L, roughness, F0);
+                    f_bsdf = f_diff + f_spec;
+
+                    // pSpec 随粗糙度变化：低粗糙度 → 高光占比大；高粗糙度 → 以漫反射为主
+                    float pSpec = mix(0.5, 0.04, roughness);
+                    float diffPdf = cosTheta / PI;
+                    float specPdf = evalGGX_PDF(N, V, L, roughness);
+                    bsdfPdf = mix(diffPdf, specPdf, pSpec);
                 } else if (matType == 1) {
                     // GGX Metal
                     vec3 F0 = mix(vec3(0.04), albedo, metallic);
@@ -163,11 +174,55 @@ void main() {
     // 3. BSDF Scatter & Importance Sampling
     vec3 nextDir;
     if (matType == 0) {
-        // Diffuse Lambertian
-        nextDir = cosineSampleHemisphere(N, prd.rngState);
-        float cosTheta = max(dot(N, nextDir), 0.0);
-        prd.lastBsdfPdf = cosTheta / PI;
-        prd.throughput *= albedo;
+        // Diffuse dielectric: importance sample between GGX specular and Cosine hemisphere diffuse
+        vec3 F0 = vec3(0.04);
+        // pSpec 随粗糙度变化：低粗糙度时增大高光采样概率
+        float pSpec = mix(0.5, 0.04, roughness);
+
+        if (randF(prd.rngState) < pSpec) {
+            // Sample GGX specular lobe
+            vec3 H;
+            float specPdf;
+            nextDir = sampleGGX(N, V, roughness, H, specPdf, prd.rngState);
+            float NdotL = dot(N, nextDir);
+            if (NdotL <= 0.0 || specPdf <= 1e-7) {
+                prd.hitAndTerm = 3u;
+                return;
+            }
+
+            float VdotH = max(dot(V, H), 0.0);
+            float NdotH = max(dot(N, H), 0.0);
+            vec3 F = F_Schlick(VdotH, F0);
+            float G = G2_Smith(NdotV, NdotL, roughness);
+            vec3 f_spec = (D_GGX(NdotH, roughness) * F * G) / (4.0 * NdotV * NdotL + 1e-7);
+
+            vec3 f_diff = evalOrenNayar(N, V, nextDir, roughness, albedo) * (vec3(1.0) - F);
+            vec3 f_total = f_spec + f_diff;
+
+            float diffPdf = NdotL / PI;
+            prd.lastBsdfPdf = mix(diffPdf, specPdf, pSpec);
+            prd.throughput *= (f_total * NdotL) / (prd.lastBsdfPdf * pSpec);
+        } else {
+            // Sample rough diffuse lobe (Cosine-weighted hemisphere)
+            nextDir = cosineSampleHemisphere(N, prd.rngState);
+            float NdotL = max(dot(N, nextDir), 0.0);
+            if (NdotL <= 0.0) {
+                prd.hitAndTerm = 3u;
+                return;
+            }
+
+            vec3 H = normalize(V + nextDir);
+            float VdotH = max(dot(V, H), 0.0);
+            vec3 F = F_Schlick(VdotH, F0);
+            vec3 f_diff = evalOrenNayar(N, V, nextDir, roughness, albedo) * (vec3(1.0) - F);
+            vec3 f_spec = evalGGX_BRDF(N, V, nextDir, roughness, F0);
+            vec3 f_total = f_diff + f_spec;
+
+            float diffPdf = NdotL / PI;
+            float specPdf = evalGGX_PDF(N, V, nextDir, roughness);
+            prd.lastBsdfPdf = mix(diffPdf, specPdf, pSpec);
+            prd.throughput *= (f_total * NdotL) / (prd.lastBsdfPdf * (1.0 - pSpec));
+        }
     } else if (matType == 1) {
         // GGX Metal
         vec3 H;
