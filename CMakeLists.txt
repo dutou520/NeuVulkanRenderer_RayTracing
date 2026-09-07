@@ -5,7 +5,8 @@ if(NOT DEFINED VCPKG_TARGET_TRIPLET)
     set(VCPKG_TARGET_TRIPLET "x64-mingw-dynamic" CACHE STRING "Vcpkg target triplet")
 endif()
 
-project(NeuTracingRender VERSION 1.1.0 LANGUAGES C CXX)
+project(NeuTracingRender VERSION 1.2.0 LANGUAGES C CXX)
+
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
