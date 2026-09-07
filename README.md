@@ -1,12 +1,24 @@
 # NeuTracingRender (NeuVulkanRenderer_RayTracing)
 
+![Version](https://img.shields.io/badge/version-1.2.0-blue)
+![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 一个基于 **Vulkan Compute Shader** 实现的高性能实时/渐进式路径追踪渲染器（Path Tracer），采用现代化 C++17 编写，集成了物理材质系统（PBR）、保边双边滤波降噪、多级泛光（Bloom）、Nishita 大气物理天空模型以及基于 Dear ImGui + SDL3 的实时编辑器界面。
 
 ---
 
+## 更新日志 (Changelog)
+
+### v1.2.0（2026-09-07）
+- **随机数生成质量大幅提升**：引入 Murmur3 哈希（`murmur3Mix` + `initRng`）对 PCG4D 初始 seed 进行打散，消除低 SPP（1–4帧）下的结构性噪声条纹 Pattern。
+
+### v1.1.0
+- 硬件 RTX 光追管线（`VK_KHR_ray_tracing_pipeline`）、原生显示器 HDR 输出（ScRGB / HDR10）。
+
 ## 效果预览
 
-![渲染器运行效果展示](docs/screenshot.png)
+![渲染器编辑器全貌（v1.2，Cornell Box + RTX 硬件光追，512 SPP，240 FPS）](docs/screenshot_editor.png)
 
 ---
 
