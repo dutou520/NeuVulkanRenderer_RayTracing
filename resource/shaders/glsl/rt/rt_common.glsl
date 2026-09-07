@@ -52,6 +52,27 @@ uvec4 pcg4d(uvec4 v) {
     return v;
 }
 
+// Murmur3 finalizer — 将小整数映射到高质量随机位，消除相邻像素/帧间的结构性关联
+uint murmur3Mix(uint h) {
+    h ^= h >> 16u;
+    h *= 0x85ebca6bu;
+    h ^= h >> 13u;
+    h *= 0xc2b2ae35u;
+    h ^= h >> 16u;
+    return h;
+}
+
+// 使用像素坐标、帧索引、外部 seed 构建高质量的 4D 初始状态
+// 各分量先经 murmur3 打散后再预热一轮 pcg4d，确保即使 frameIndex=0 时也无明显噪声 pattern
+uvec4 initRng(uvec2 pixel, uint frame, uint seed) {
+    uvec4 v;
+    v.x = murmur3Mix(pixel.x ^ (pixel.y  << 16u));
+    v.y = murmur3Mix(pixel.y ^ (pixel.x  << 16u));
+    v.z = murmur3Mix(frame   ^ (seed     * 1234567u));
+    v.w = murmur3Mix(seed    ^ (frame    * 7654321u));
+    return pcg4d(v); // 预热一轮，进一步打散初始状态
+}
+
 float randF(inout uvec4 state) {
     state = pcg4d(state);
     return float(state.x >> 8u) * (1.0 / 16777216.0);
@@ -127,7 +148,7 @@ vec3 sampleGGX(vec3 N, vec3 V, float roughness, out vec3 H, out float pdf, inout
     float NdotH = max(dot(N, H), 0.0);
     float VdotH = max(dot(V, H), 0.0);
     float D = D_GGX(NdotH, roughness);
-    pdf = (D * NdotH) / (4.0 * VdotH + 1e-7);
+    pdf = (D * NdotH) / max(4.0 * VdotH, 1e-4);
     return L;
 }
 
@@ -137,7 +158,7 @@ float evalGGX_PDF(vec3 N, vec3 V, vec3 L, float roughness) {
     float VdotH = max(dot(V, H), 0.0);
     if (NdotH <= 0.0 || VdotH <= 0.0) return 0.0;
     float D = D_GGX(NdotH, roughness);
-    return (D * NdotH) / (4.0 * VdotH + 1e-7);
+    return (D * NdotH) / max(4.0 * VdotH, 1e-4);
 }
 
 vec3 evalGGX_BRDF(vec3 N, vec3 V, vec3 L, float roughness, vec3 F0) {

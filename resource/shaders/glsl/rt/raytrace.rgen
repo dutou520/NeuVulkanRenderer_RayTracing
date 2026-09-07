@@ -35,8 +35,10 @@ void main() {
     uint samplesPerFrame = u_Push.renderParams.w;
     int maxBounces = int(u_Push.camUp.w);
 
+    // 用 Murmur3 打散后的 initRng 初始化 RNG，避免相邻像素/帧的 seed 过于接近
+    // seed 从 CPU 端每次渲染重置时随机化，此处取其位模式参与 hash
     uint seed = floatBitsToUint(u_Push.postParams.z);
-    uvec4 pixelRng = uvec4(uint(pixelCoord.x), uint(pixelCoord.y), frameIndex, seed);
+    uvec4 pixelRng = initRng(uvec2(pixelCoord), frameIndex, seed);
 
     vec3 camPos = u_Push.camPos.xyz;
     float fovRad = u_Push.camPos.w;
@@ -117,6 +119,8 @@ void main() {
                     break;
                 }
                 prd.throughput /= pSurvive;
+                // 钳制：防止玻璃等 delta BSDF 路径在 RR 放大后碰到自发光体时权重爆炸
+                prd.throughput = min(prd.throughput, vec3(20.0));
             }
 
             rayOrigin = prd.nextOrigin;

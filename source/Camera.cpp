@@ -21,7 +21,7 @@ void Camera::ResetCornellBoxView() {
     m_Position = glm::vec3(3.2f, 1.0f, 0.0f);
     m_Target = glm::vec3(0.0f, 1.0f, 0.0f);
     m_WorldUp = glm::vec3(0.0f, 1.0f, 0.0f);
-    m_Fov = 40.0f;
+    m_Fov = 49.0f;
     m_Aperture = 0.0f;
     m_FocusDist = 3.2f;
     UpdateFromTarget();

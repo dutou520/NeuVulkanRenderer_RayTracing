@@ -127,7 +127,8 @@ void main() {
         float cosTheta = dot(N, L);
         float cosLight = abs(dot(-L, lightNormal));
 
-        if (cosTheta > 0.0 && cosLight > 0.001) {
+        // dist > 0.005：当采样点极近时 lightPdf→0 会导致 lEmission/lightPdf 爆炸
+        if (cosTheta > 0.0 && cosLight > 0.001 && dist > 0.005) {
             vec3 shadowOrigin = pos + N * 0.001;
             shadowPrd.isOccluded = 1u;
             traceRayEXT(topLevelAS,
@@ -201,7 +202,8 @@ void main() {
 
             float diffPdf = NdotL / PI;
             prd.lastBsdfPdf = mix(diffPdf, specPdf, pSpec);
-            prd.throughput *= (f_total * NdotL) / (prd.lastBsdfPdf * pSpec);
+            // lastBsdfPdf 已经是混合 PDF，直接除即可，不需要再额外除 pSpec
+            prd.throughput *= (f_total * NdotL) / max(prd.lastBsdfPdf, 1e-7);
         } else {
             // Sample rough diffuse lobe (Cosine-weighted hemisphere)
             nextDir = cosineSampleHemisphere(N, prd.rngState);
@@ -221,7 +223,8 @@ void main() {
             float diffPdf = NdotL / PI;
             float specPdf = evalGGX_PDF(N, V, nextDir, roughness);
             prd.lastBsdfPdf = mix(diffPdf, specPdf, pSpec);
-            prd.throughput *= (f_total * NdotL) / (prd.lastBsdfPdf * (1.0 - pSpec));
+            // lastBsdfPdf 已经是混合 PDF，直接除即可，不需要再额外除 (1-pSpec)
+            prd.throughput *= (f_total * NdotL) / max(prd.lastBsdfPdf, 1e-7);
         }
     } else if (matType == 1) {
         // GGX Metal
@@ -235,13 +238,11 @@ void main() {
         }
 
         vec3 F0 = mix(vec3(0.04), albedo, metallic);
-        float VdotH = max(dot(V, H), 0.0);
-        float NdotH = max(dot(N, H), 0.0);
-        vec3 F = F_Schlick(VdotH, F0);
-        float G = G2_Smith(NdotV, NdotL, roughness);
-
-        vec3 weight = F * (G * VdotH / max(1e-5, NdotV * NdotH));
-        prd.throughput *= weight;
+        float NdotLclamped = max(NdotL, 0.0);
+        // 用 BRDF/PDF 标准形式代替手动展开，避免 NdotV/NdotH→0 时数值爆炸
+        vec3 f_bsdf = evalGGX_BRDF(N, V, nextDir, roughness, F0);
+        vec3 weight = (f_bsdf * NdotLclamped) / max(ggxPdf, 1e-7);
+        prd.throughput *= min(weight, vec3(10.0)); // 钳制防止极端权重
         prd.lastBsdfPdf = ggxPdf;
     } else if (matType == 2) {
         // Glass (Dielectric)

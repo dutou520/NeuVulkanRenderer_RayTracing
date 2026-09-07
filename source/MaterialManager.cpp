@@ -89,6 +89,16 @@ void MaterialManager::SetupCornellBoxDefaults() {
     matCone.roughness = 0.2f;
     AddMaterial(matCone);
 
+    // 8: 大理石半身雕塑 (Marble Bust)
+    Material matBust;
+    matBust.name = "Marble Bust";
+    matBust.type = MaterialType::Diffuse;
+    matBust.albedo = glm::vec3(0.9f, 0.9f, 0.9f);
+    matBust.roughness = 0.35f;
+    matBust.albedoTexPath = "resource/models/marble_bust_01_diff_1k.jpg";
+    matBust.roughnessTexPath = "resource/models/marble_bust_01_rough_1k.jpg";
+    AddMaterial(matBust);
+
     m_SelectedIndex = 0;
     m_Dirty = true;
     LOG_I("Setup default Cornell Box materials ({} materials registered).", m_Materials.size());

@@ -23,7 +23,7 @@ struct Material {
     std::string name = "Default";
     MaterialType type = MaterialType::Diffuse;
     glm::vec3 albedo = glm::vec3(0.8f);
-    float roughness = 0.5f;
+    float roughness = 1.0f;
     float metallic = 0.0f;
     float ior = 1.5f;
     float transmission = 0.0f;

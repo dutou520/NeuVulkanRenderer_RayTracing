@@ -1,4 +1,5 @@
 #include "Scene.h"
+#include "TextureManager.h"
 #include "neuLog.h"
 
 #define TINYOBJLOADER_IMPLEMENTATION
@@ -18,8 +19,12 @@ bool Scene::LoadOBJ(const std::string& filepath) {
 
     std::filesystem::path p = std::filesystem::u8path(filepath);
     if (!std::filesystem::exists(p)) {
-        LOG_E("File does not exist: {}", filepath);
-        return false;
+        if (p.is_relative() && std::filesystem::exists("../" + filepath)) {
+            p = std::filesystem::u8path("../" + filepath);
+        } else {
+            LOG_E("File does not exist: {}", filepath);
+            return false;
+        }
     }
 
     std::ifstream ifs(p);
@@ -175,12 +180,14 @@ void Scene::AssignDefaultMaterials() {
             matId = matMgr.FindMaterial("Cornell Red");
         } else if (lower.find("wall_right") != std::string::npos) {
             matId = matMgr.FindMaterial("Cornell Green");
-        } else if (lower.find("emmision") != std::string::npos || lower.find("light") != std::string::npos) {
+        } else if (lower.find("emmision") != std::string::npos || lower.find("light") != std::string::npos || lower.find("top.001") != std::string::npos) {
             matId = matMgr.FindMaterial("Ceiling Light");
         } else if (n.find("猴头") != std::string::npos || lower.find("monkey") != std::string::npos || lower.find("suzanne") != std::string::npos) {
             matId = matMgr.FindMaterial("Gold (Monkey)");
         } else if (n.find("球") != std::string::npos || lower.find("sphere") != std::string::npos) {
             matId = matMgr.FindMaterial("Glass (Sphere)");
+        } else if (lower.find("bust") != std::string::npos || lower.find("marble") != std::string::npos || n.find("雕像") != std::string::npos) {
+            matId = matMgr.FindMaterial("Marble Bust");
         } else if (lower.find("box") != std::string::npos) {
             matId = matMgr.FindMaterial("Box Material");
         } else if (n.find("锥") != std::string::npos || lower.find("cone") != std::string::npos) {
@@ -191,6 +198,20 @@ void Scene::AssignDefaultMaterials() {
 
         if (matId < 0) matId = 0;
         obj.materialId = matId;
+
+        // Auto load textures if material has path but texture not loaded
+        auto* m = matMgr.GetMaterial(matId);
+        if (m) {
+            if (m->albedoTexIdx < 0 && !m->albedoTexPath.empty()) {
+                m->albedoTexIdx = TextureManager::Instance().LoadTexture(m->albedoTexPath, true);
+            }
+            if (m->roughnessTexIdx < 0 && !m->roughnessTexPath.empty()) {
+                m->roughnessTexIdx = TextureManager::Instance().LoadTexture(m->roughnessTexPath, false);
+            }
+            if (m->normalTexIdx < 0 && !m->normalTexPath.empty()) {
+                m->normalTexIdx = TextureManager::Instance().LoadTexture(m->normalTexPath, false);
+            }
+        }
 
         for (int t = obj.firstTriangle; t < obj.firstTriangle + obj.triangleCount; ++t) {
             m_Triangles[t].materialId = matId;

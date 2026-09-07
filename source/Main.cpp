@@ -36,7 +36,7 @@ int main(int argc, char* argv[]) {
         neurender::EditorGUI::Init();
 
         // Load Cornell Box by default
-        std::string startupModel = "resource/models/cornelbox.obj";
+        std::string startupModel = "resource/models/康奈尔盒子.obj";
         if (argc > 1) {
             startupModel = argv[1];
         }
