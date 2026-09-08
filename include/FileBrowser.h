@@ -38,7 +38,7 @@ private:
     std::vector<std::filesystem::directory_entry> m_Entries;
     std::function<void(const std::string&)> m_OnSelectedCallback;
 
-    int m_FilterIndex = 0; // 0 = .obj, 1 = .json, 2 = image (*.png;*.jpg...), 3 = all
+    int m_FilterIndex = 0; // 0 = 3D 模型 (*.obj;*.gltf;*.glb), 1 = .json, 2 = image (*.png;*.jpg...), 3 = all
 
     // Preview state
     UIPreviewTexture m_PreviewTexture{};

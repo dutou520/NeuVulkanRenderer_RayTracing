@@ -1,13 +1,15 @@
 #include "TextureManager.h"
 #include "neuLog.h"
 
-#define STB_IMAGE_STATIC
+#define STBI_WINDOWS_UTF8
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
 #include <cstring>
 #include <stdexcept>
 #include <filesystem>
+#include <fstream>
+#include <algorithm>
 #include "imgui_impl_vulkan.h"
 
 namespace neurender {
@@ -85,6 +87,42 @@ void TextureManager::Shutdown() {
     LOG_I("TextureManager shut down.");
 }
 
+// Helper to resolve and read an image file robustly into memory across paths
+static std::vector<uint8_t> ReadImageFileBytes(const std::string& filepath, std::string& outResolvedPath) {
+    std::vector<std::filesystem::path> candidates;
+    candidates.push_back(std::filesystem::u8path(filepath));
+
+    std::filesystem::path p = std::filesystem::u8path(filepath);
+    if (p.is_relative()) {
+        candidates.push_back(std::filesystem::u8path("../" + filepath));
+        std::string filename = p.filename().u8string();
+        candidates.push_back(std::filesystem::u8path("resource/textures/" + filename));
+        candidates.push_back(std::filesystem::u8path("../resource/textures/" + filename));
+        candidates.push_back(std::filesystem::u8path("resource/models/" + filename));
+        candidates.push_back(std::filesystem::u8path("../resource/models/" + filename));
+    }
+
+    for (const auto& cand : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(cand, ec) && !std::filesystem::is_directory(cand, ec)) {
+            std::ifstream ifs(cand, std::ios::binary | std::ios::ate);
+            if (ifs.is_open()) {
+                std::streamsize sz = ifs.tellg();
+                if (sz > 0) {
+                    ifs.seekg(0, std::ios::beg);
+                    std::vector<uint8_t> buffer(static_cast<size_t>(sz));
+                    if (ifs.read(reinterpret_cast<char*>(buffer.data()), sz)) {
+                        outResolvedPath = cand.u8string();
+                        std::replace(outResolvedPath.begin(), outResolvedPath.end(), '\\', '/');
+                        return buffer;
+                    }
+                }
+            }
+        }
+    }
+    return {};
+}
+
 int TextureManager::LoadTexture(const std::string& filepath, bool isSRGB) {
     if (!m_Initialized || filepath.empty()) return -1;
 
@@ -98,17 +136,26 @@ int TextureManager::LoadTexture(const std::string& filepath, bool isSRGB) {
         return -1;
     }
 
+    std::string resolvedPath;
+    std::vector<uint8_t> fileBytes = ReadImageFileBytes(filepath, resolvedPath);
+    if (fileBytes.empty()) {
+        LOG_W("TextureManager: failed to find or read image file: {}", filepath);
+        return -1;
+    }
+
     int w = 0, h = 0, channels = 0;
-    stbi_uc* pixels = stbi_load(filepath.c_str(), &w, &h, &channels, STBI_rgb_alpha);
-    if (!pixels) {
-        LOG_W("TextureManager: failed to load image from: {}", filepath);
+    stbi_uc* pixels = stbi_load_from_memory(fileBytes.data(), static_cast<int>(fileBytes.size()),
+                                           &w, &h, &channels, STBI_rgb_alpha);
+    if (!pixels || w <= 0 || h <= 0) {
+        if (pixels) stbi_image_free(pixels);
+        LOG_W("TextureManager: failed to decode image from: {} (stb: {})", filepath, stbi_failure_reason());
         return -1;
     }
 
     int slot = CreateTextureFromMemory(filepath, pixels, w, h, isSRGB);
     stbi_image_free(pixels);
 
-    LOG_I("Loaded texture '{}' into slot {} ({}x{}).", filepath, slot, w, h);
+    LOG_I("Loaded texture '{}' (resolved: '{}') into slot {} ({}x{}).", filepath, resolvedPath, slot, w, h);
     return slot;
 }
 
@@ -323,13 +370,15 @@ UIPreviewTexture TextureManager::CreateUIPreviewTexture(const std::string& filep
     UIPreviewTexture preview{};
     if (!m_Initialized || filepath.empty()) return preview;
 
-    std::error_code ec;
-    if (!std::filesystem::exists(std::filesystem::u8path(filepath), ec)) {
+    std::string resolvedPath;
+    std::vector<uint8_t> fileBytes = ReadImageFileBytes(filepath, resolvedPath);
+    if (fileBytes.empty()) {
         return preview;
     }
 
     int w = 0, h = 0, channels = 0;
-    stbi_uc* pixels = stbi_load(filepath.c_str(), &w, &h, &channels, STBI_rgb_alpha);
+    stbi_uc* pixels = stbi_load_from_memory(fileBytes.data(), static_cast<int>(fileBytes.size()),
+                                           &w, &h, &channels, STBI_rgb_alpha);
     if (!pixels || w <= 0 || h <= 0) {
         if (pixels) stbi_image_free(pixels);
         return preview;

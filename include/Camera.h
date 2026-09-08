@@ -4,6 +4,8 @@
 
 namespace neurender {
 
+struct AABB;
+
 enum class CameraMovement {
     Forward,
     Backward,
@@ -22,8 +24,9 @@ public:
 
     void SetLookAt(glm::vec3 eye, glm::vec3 target, glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f));
 
-    void ProcessKeyboard(CameraMovement direction, float deltaTime);
+    void ProcessKeyboard(CameraMovement direction, float deltaTime, float speedMultiplier = 1.0f);
     void ProcessMouseMovement(float xoffset, float yoffset, bool constrainPitch = true);
+    void ProcessMouseOrbit(float xoffset, float yoffset, bool constrainPitch = true);
     void ProcessMouseScroll(float yoffset);
 
     glm::vec3 GetPosition() const { return m_Position; }
@@ -44,6 +47,7 @@ public:
 
     float GetFocusDistance() const { return m_FocusDist; }
     void SetFocusDistance(float d) { m_FocusDist = d; m_Dirty = true; }
+    glm::vec3 GetFocusPoint() const { return m_Position + m_Front * m_FocusDist; }
 
     float GetYaw() const { return m_Yaw; }
     void SetYaw(float y) { m_Yaw = y; UpdateCameraVectors(); m_Dirty = true; }
@@ -58,6 +62,7 @@ public:
     void ClearDirty() { m_Dirty = false; }
 
     void ResetCornellBoxView();
+    void FrameBounds(const AABB& bounds);
 
 private:
     void UpdateCameraVectors();

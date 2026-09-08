@@ -98,6 +98,7 @@ set(SOURCES
     source/Console.cpp
     source/imgui_impl_sdl3.cpp
     source/imgui_impl_vulkan.cpp
+    source/GLTFLoader.cpp
     source/Main.cpp
 )
 
@@ -112,6 +113,7 @@ target_include_directories(NeuTracingRender PRIVATE
     "${CMAKE_SOURCE_DIR}/ThirParty/stb"
     "${CMAKE_SOURCE_DIR}/ThirParty/tinyobjloader"
     "${CMAKE_SOURCE_DIR}/ThirParty/nlohmann-json"
+    "${CMAKE_SOURCE_DIR}/ThirParty/tinygltf"
 )
 
 target_link_libraries(NeuTracingRender PRIVATE

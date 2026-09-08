@@ -3,6 +3,7 @@
 #extension GL_EXT_nonuniform_qualifier : enable
 
 #include "rt_common.glsl"
+#include "../nishita_sky.glsl"
 
 hitAttributeEXT vec2 attribs;
 
@@ -14,6 +15,11 @@ layout(std430, set = 0, binding = 2) readonly buffer TriangleBuffer { GPUTriangl
 layout(std430, set = 0, binding = 3) readonly buffer MaterialBuffer { GPUMaterial materials[]; };
 layout(std430, set = 0, binding = 4) readonly buffer LightBuffer { int lightTriangles[]; };
 layout(set = 0, binding = 5) uniform sampler2D u_Textures[64];
+layout(std140, set = 0, binding = 6) uniform SkyParams {
+    vec4 sunDirAndIntensity;
+    vec4 atmosphereParams;
+    vec4 groundAlbedo;
+} u_Sky;
 
 layout(push_constant) uniform PushConstants {
     vec4 camPos;
@@ -50,13 +56,22 @@ void main() {
 
     int normTex = mat.texIndices.z;
     if (normTex >= 0 && normTex < 64) {
-        vec3 T = normalize(tri.tangent.xyz);
-        T = normalize(T - dot(T, N) * N);
-        vec3 B = cross(N, T) * tri.tangent.w;
+        vec3 T = tri.tangent.xyz;
+        T = T - dot(T, N) * N;
+        if (length(T) > 1e-4) {
+            T = normalize(T);
+        } else {
+            T = abs(N.z) < 0.999 ? normalize(cross(N, vec3(0.0, 0.0, 1.0))) : normalize(cross(N, vec3(0.0, 1.0, 0.0)));
+        }
+        float bSign = abs(tri.tangent.w) > 0.1 ? tri.tangent.w : 1.0;
+        vec3 B = cross(N, T) * bSign;
         mat3 TBN = mat3(T, B, N);
         vec3 nSample = texture(u_Textures[nonuniformEXT(normTex)], uv).rgb * 2.0 - 1.0;
         nSample.xy *= mat.texScales.x;
-        N = normalize(TBN * nSample);
+        vec3 newN = TBN * nSample;
+        if (length(newN) > 1e-4) {
+            N = normalize(newN);
+        }
     }
 
     int roughTex = mat.texIndices.y;
@@ -78,6 +93,45 @@ void main() {
     prd.hitAndTerm = 1u;
     vec3 V = -gl_WorldRayDirectionEXT;
     float NdotV = max(dot(N, V), 0.0);
+
+    // Sun Direct Light Sampling for GGX Metal
+    if (u_Sky.groundAlbedo.w > 0.5) {
+        vec3 sunDir = normalize(u_Sky.sunDirAndIntensity.xyz);
+        float sunIntensity = u_Sky.sunDirAndIntensity.w;
+        float sunAngle = max(0.001, u_Sky.atmosphereParams.w);
+        float cosMax = cos(sunAngle);
+
+        vec2 rSun = randF2(prd.rngState);
+        float cosThetaCone = (1.0 - rSun.x) + rSun.x * cosMax;
+        float sinThetaCone = sqrt(max(0.0, 1.0 - cosThetaCone * cosThetaCone));
+        float phiCone = 2.0 * PI * rSun.y;
+        vec3 sT, sB;
+        buildOrthonormalBasis(sunDir, sT, sB);
+        vec3 L_sun = normalize(sT * (cos(phiCone) * sinThetaCone) + sB * (sin(phiCone) * sinThetaCone) + sunDir * cosThetaCone);
+
+        float NdotL = dot(N, L_sun);
+        if (NdotL > 0.0 && L_sun.y > -0.01) {
+            vec3 shadowOrigin = pos + N * 0.002;
+            shadowPrd.isOccluded = 1u;
+            traceRayEXT(topLevelAS,
+                        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+                        0xFF, 1, 0, 1, shadowOrigin, 0.001, L_sun, 1000.0, 1);
+
+            if (shadowPrd.isOccluded == 0u) {
+                vec3 sunColor;
+                if (u_Sky.atmosphereParams.x > 0.5) {
+                    sunColor = GetSunTransmittance(L_sun, u_Sky.atmosphereParams.y, u_Sky.atmosphereParams.z) * sunIntensity;
+                } else {
+                    sunColor = vec3(1.0, 0.98, 0.92) * sunIntensity;
+                }
+
+                vec3 F0 = mix(vec3(0.04), albedo, metallic);
+                vec3 f_bsdf = evalGGX_BRDF(N, V, L_sun, roughness, F0);
+
+                prd.radiance += prd.throughput * f_bsdf * NdotL * sunColor;
+            }
+        }
+    }
 
     // Next Event Estimation for GGX Metal
     int numLights = int(u_Push.postParams.w);

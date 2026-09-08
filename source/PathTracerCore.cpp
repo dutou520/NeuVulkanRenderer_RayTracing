@@ -123,6 +123,7 @@ float PathTracerCore::s_SunAngularSize = 0.0093f; // ~0.53 degrees
 float PathTracerCore::s_RayleighScale = 1.0f;
 float PathTracerCore::s_MieTurbidity = 1.0f;
 glm::vec3 PathTracerCore::s_GroundAlbedo = glm::vec3(0.1f, 0.1f, 0.1f);
+bool PathTracerCore::s_SunEnabled = false;
 
 glm::vec3 PathTracerCore::GetSunDirection() {
   float elRad = glm::radians(s_SunElevation);
@@ -2161,7 +2162,7 @@ void PathTracerCore::UpdateSkyUBO() {
   ubo.atmosphereParams =
       glm::vec4(static_cast<float>(s_SkyMode), s_RayleighScale, s_MieTurbidity,
                 s_SunAngularSize);
-  ubo.groundAlbedo = glm::vec4(s_GroundAlbedo, 0.0f);
+  ubo.groundAlbedo = glm::vec4(s_GroundAlbedo, s_SunEnabled ? 1.0f : 0.0f);
 
   void *data;
   vkMapMemory(s_Device, s_SkyBufferMemory, 0, sizeof(SkyUBO), 0, &data);
@@ -2173,7 +2174,7 @@ void PathTracerCore::UpdateSSBOs() {
   // 1. BVH Buffer
   const auto &bvh = s_Scene.GetBVH();
   const auto &bvhNodes = bvh.GetNodes();
-  VkDeviceSize bvhSize = sizeof(GPUBVHNode) * bvhNodes.size();
+  VkDeviceSize bvhSize = std::max(static_cast<VkDeviceSize>(sizeof(GPUBVHNode) * bvhNodes.size()), static_cast<VkDeviceSize>(sizeof(GPUBVHNode)));
   if (s_BVHBuffer == VK_NULL_HANDLE || s_BVHBufferSize < bvhSize) {
     if (s_BVHBuffer != VK_NULL_HANDLE) {
       vkDestroyBuffer(s_Device, s_BVHBuffer, nullptr);
@@ -2194,7 +2195,7 @@ void PathTracerCore::UpdateSSBOs() {
                  staging, stagingMem);
     void *data;
     vkMapMemory(s_Device, stagingMem, 0, bvhSize, 0, &data);
-    memcpy(data, bvhNodes.data(), bvhSize);
+    memcpy(data, bvhNodes.data(), sizeof(GPUBVHNode) * bvhNodes.size());
     vkUnmapMemory(s_Device, stagingMem);
     CopyBuffer(staging, s_BVHBuffer, bvhSize);
     vkDestroyBuffer(s_Device, staging, nullptr);
@@ -2207,7 +2208,7 @@ void PathTracerCore::UpdateSSBOs() {
   const auto &gpuMaterials = matMgr.GetGPUMaterials();
   const auto &lightTriangles = s_Scene.GetLightTriangles();
 
-  VkDeviceSize triSize = sizeof(GPUTriangle) * triangles.size();
+  VkDeviceSize triSize = std::max(static_cast<VkDeviceSize>(sizeof(GPUTriangle) * triangles.size()), static_cast<VkDeviceSize>(sizeof(GPUTriangle)));
   if (s_TriangleBuffer == VK_NULL_HANDLE || s_TriangleBufferSize < triSize) {
     if (s_TriangleBuffer != VK_NULL_HANDLE) {
       vkDestroyBuffer(s_Device, s_TriangleBuffer, nullptr);
@@ -2233,7 +2234,7 @@ void PathTracerCore::UpdateSSBOs() {
                  staging, stagingMem);
     void *data;
     vkMapMemory(s_Device, stagingMem, 0, triSize, 0, &data);
-    memcpy(data, triangles.data(), triSize);
+    memcpy(data, triangles.data(), sizeof(GPUTriangle) * triangles.size());
     vkUnmapMemory(s_Device, stagingMem);
     CopyBuffer(staging, s_TriangleBuffer, triSize);
     vkDestroyBuffer(s_Device, staging, nullptr);
@@ -2241,7 +2242,7 @@ void PathTracerCore::UpdateSSBOs() {
   }
 
   // 3. Material Buffer
-  VkDeviceSize matSize = sizeof(GPUMaterial) * gpuMaterials.size();
+  VkDeviceSize matSize = std::max(static_cast<VkDeviceSize>(sizeof(GPUMaterial) * gpuMaterials.size()), static_cast<VkDeviceSize>(sizeof(GPUMaterial)));
   if (s_MaterialBuffer == VK_NULL_HANDLE || s_MaterialBufferSize < matSize) {
     if (s_MaterialBuffer != VK_NULL_HANDLE) {
       vkDestroyBuffer(s_Device, s_MaterialBuffer, nullptr);
@@ -2263,7 +2264,7 @@ void PathTracerCore::UpdateSSBOs() {
                  staging, stagingMem);
     void *data;
     vkMapMemory(s_Device, stagingMem, 0, matSize, 0, &data);
-    memcpy(data, gpuMaterials.data(), matSize);
+    memcpy(data, gpuMaterials.data(), sizeof(GPUMaterial) * gpuMaterials.size());
     vkUnmapMemory(s_Device, stagingMem);
     CopyBuffer(staging, s_MaterialBuffer, matSize);
     vkDestroyBuffer(s_Device, staging, nullptr);
@@ -2271,7 +2272,7 @@ void PathTracerCore::UpdateSSBOs() {
   }
 
   // 4. Light Buffer
-  VkDeviceSize lightSize = sizeof(int) * lightTriangles.size();
+  VkDeviceSize lightSize = std::max(static_cast<VkDeviceSize>(sizeof(int) * lightTriangles.size()), static_cast<VkDeviceSize>(sizeof(int)));
   if (s_LightBuffer == VK_NULL_HANDLE || s_LightBufferSize < lightSize) {
     if (s_LightBuffer != VK_NULL_HANDLE) {
       vkDestroyBuffer(s_Device, s_LightBuffer, nullptr);
@@ -2992,6 +2993,7 @@ void PathTracerCore::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                   VkMemoryPropertyFlags properties,
                                   VkBuffer &buffer,
                                   VkDeviceMemory &bufferMemory) {
+  if (size == 0) size = 16;
   VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   bufferInfo.size = size;
   bufferInfo.usage = usage;
@@ -3208,7 +3210,7 @@ void PathTracerCore::CreateRTPipeline() {
       {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, TextureManager::MAX_TEXTURES,
        VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
       {6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
-       VK_SHADER_STAGE_MISS_BIT_KHR, nullptr},
+       VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, nullptr},
       {7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
        VK_SHADER_STAGE_RAYGEN_BIT_KHR, nullptr}};
 

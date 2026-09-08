@@ -38,8 +38,14 @@ void EditorGUI::SetWindowFocus(const std::string& name) {
 void EditorGUI::Init() {
     LoadLayoutState();
     s_FileBrowser.SetFileSelectedCallback([](const std::string& path) {
-        if (PathTracerCore::GetScene().LoadOBJ(path)) {
-            PathTracerCore::GetCamera().ResetCornellBoxView();
+        if (PathTracerCore::GetScene().LoadModel(path)) {
+            std::string lower = path;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c){ return std::tolower(c); });
+            if (lower.find("康奈尔") != std::string::npos || lower.find("cornell") != std::string::npos) {
+                PathTracerCore::GetCamera().ResetCornellBoxView();
+            } else {
+                PathTracerCore::GetCamera().FrameBounds(PathTracerCore::GetScene().GetBounds());
+            }
             PathTracerCore::ResetAccumulation();
             LOG_I("Loaded model via FileBrowser: {}", path);
         }
@@ -172,8 +178,12 @@ void EditorGUI::RenderMenuBar() {
         }
 
         if (ImGui::BeginMenu("相机 (Camera)")) {
-            if (ImGui::MenuItem("重置为康奈尔盒视角 (Reset View)")) {
+            if (ImGui::MenuItem("重置为康奈尔盒视角 (Reset Cornell View)")) {
                 PathTracerCore::GetCamera().ResetCornellBoxView();
+                PathTracerCore::ResetAccumulation();
+            }
+            if (ImGui::MenuItem("聚焦当前模型居中 (Frame Model)")) {
+                PathTracerCore::GetCamera().FrameBounds(PathTracerCore::GetScene().GetBounds());
                 PathTracerCore::ResetAccumulation();
             }
             ImGui::EndMenu();
@@ -300,30 +310,50 @@ void EditorGUI::RenderViewport() {
     s_ViewportHovered = ImGui::IsItemHovered();
 
     // Mouse & Keyboard Camera Navigation in Viewport
-    if (s_ViewportHovered) {
-        auto& cam = PathTracerCore::GetCamera();
-        ImGuiIO& io = ImGui::GetIO();
+    static bool s_IsOrbiting = false;
+    static bool s_IsNavigating = false;
 
-        if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-            cam.ProcessMouseMovement(io.MouseDelta.x, -io.MouseDelta.y);
+    if (s_ViewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        s_IsOrbiting = true;
+    }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        s_IsOrbiting = false;
+    }
 
-            float dt = io.DeltaTime;
-            if (ImGui::IsKeyDown(ImGuiKey_W)) cam.ProcessKeyboard(CameraMovement::Forward, dt);
-            if (ImGui::IsKeyDown(ImGuiKey_S)) cam.ProcessKeyboard(CameraMovement::Backward, dt);
-            if (ImGui::IsKeyDown(ImGuiKey_A)) cam.ProcessKeyboard(CameraMovement::Left, dt);
-            if (ImGui::IsKeyDown(ImGuiKey_D)) cam.ProcessKeyboard(CameraMovement::Right, dt);
-            if (ImGui::IsKeyDown(ImGuiKey_E)) cam.ProcessKeyboard(CameraMovement::Up, dt);
-            if (ImGui::IsKeyDown(ImGuiKey_Q)) cam.ProcessKeyboard(CameraMovement::Down, dt);
+    if (s_ViewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        s_IsNavigating = true;
+    }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+        s_IsNavigating = false;
+    }
+
+    auto& cam = PathTracerCore::GetCamera();
+    ImGuiIO& io = ImGui::GetIO();
+
+    if (s_IsNavigating) {
+        cam.ProcessMouseMovement(io.MouseDelta.x, -io.MouseDelta.y);
+
+        float speedMultiplier = (io.KeyShift || ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift)) ? 2.0f : 1.0f;
+        float dt = io.DeltaTime;
+        if (ImGui::IsKeyDown(ImGuiKey_W)) cam.ProcessKeyboard(CameraMovement::Forward, dt, speedMultiplier);
+        if (ImGui::IsKeyDown(ImGuiKey_S)) cam.ProcessKeyboard(CameraMovement::Backward, dt, speedMultiplier);
+        if (ImGui::IsKeyDown(ImGuiKey_A)) cam.ProcessKeyboard(CameraMovement::Left, dt, speedMultiplier);
+        if (ImGui::IsKeyDown(ImGuiKey_D)) cam.ProcessKeyboard(CameraMovement::Right, dt, speedMultiplier);
+        if (ImGui::IsKeyDown(ImGuiKey_E)) cam.ProcessKeyboard(CameraMovement::Up, dt, speedMultiplier);
+        if (ImGui::IsKeyDown(ImGuiKey_Q)) cam.ProcessKeyboard(CameraMovement::Down, dt, speedMultiplier);
+    } else if (s_IsOrbiting) {
+        if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f) {
+            cam.ProcessMouseOrbit(io.MouseDelta.x, -io.MouseDelta.y);
         }
+    }
 
-        if (io.MouseWheel != 0.0f) {
-            cam.ProcessMouseScroll(io.MouseWheel);
-        }
+    if (s_ViewportHovered && io.MouseWheel != 0.0f) {
+        cam.ProcessMouseScroll(io.MouseWheel);
     }
 
     // Overlay stats in viewport
     ImGui::SetCursorPos(ImVec2(20, 30));
-    ImGui::BeginChild("StatsOverlay", ImVec2(240, 130), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("StatsOverlay", ImVec2(260, 145), true, ImGuiWindowFlags_NoScrollbar);
     ImGui::Text("SPP: %d / %d", PathTracerCore::GetAccumulatedSPP(), PathTracerCore::GetTargetSPP());
     ImGui::Text("分辨率: %dx%d", PathTracerCore::GetRenderWidth(), PathTracerCore::GetRenderHeight());
     ImGui::Text("帧率: %.1f FPS (%.2f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
@@ -338,7 +368,8 @@ void EditorGUI::RenderViewport() {
     } else {
         ImGui::TextDisabled("Bloom: 已关闭");
     }
-    ImGui::TextDisabled("按住右键 + WASD 漫游视角");
+    ImGui::TextDisabled("左键拖拽: 绕焦点旋转");
+    ImGui::TextDisabled("右键+WASD: 漫游 (Shift加速)");
     ImGui::EndChild();
 
     ImGui::End();
@@ -661,6 +692,9 @@ void EditorGUI::RenderCameraSceneSettings() {
             cam.SetFocusDistance(focusDist);
         }
 
+        glm::vec3 focusPt = cam.GetFocusPoint();
+        ImGui::TextDisabled("当前焦点: (%.2f, %.2f, %.2f)", focusPt.x, focusPt.y, focusPt.z);
+
         if (ImGui::Button("重置为康奈尔盒视角", ImVec2(-1, 0))) {
             cam.ResetCornellBoxView();
             PathTracerCore::ResetAccumulation();
@@ -674,6 +708,11 @@ void EditorGUI::RenderCameraSceneSettings() {
             PathTracerCore::SetSkyMode(skyMode);
         }
 
+        bool sunEnabled = PathTracerCore::GetSunEnabled();
+        if (ImGui::Checkbox("开启阳光 (Enable Sunlight)", &sunEnabled)) {
+            PathTracerCore::SetSunEnabled(sunEnabled);
+        }
+
         if (skyMode == 0) {
             glm::vec3 envCol = PathTracerCore::GetEnvColor();
             if (ImGui::ColorEdit3("环境光颜色", &envCol.x)) {
@@ -683,6 +722,31 @@ void EditorGUI::RenderCameraSceneSettings() {
             float envInt = PathTracerCore::GetEnvIntensity();
             if (ImGui::SliderFloat("环境光强度", &envInt, 0.0f, 5.0f, "%.2f")) {
                 PathTracerCore::SetEnvIntensity(envInt);
+            }
+
+            if (sunEnabled) {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "阳光参数 (Sunlight Parameters):");
+
+                float el = PathTracerCore::GetSunElevation();
+                if (ImGui::SliderFloat("太阳高度角 (Elevation)##ConstSky", &el, -5.0f, 90.0f, "%.1f deg")) {
+                    PathTracerCore::SetSunElevation(el);
+                }
+
+                float az = PathTracerCore::GetSunAzimuth();
+                if (ImGui::SliderFloat("太阳方位角 (Azimuth)##ConstSky", &az, 0.0f, 360.0f, "%.1f deg")) {
+                    PathTracerCore::SetSunAzimuth(az);
+                }
+
+                float intensity = PathTracerCore::GetSunIntensity();
+                if (ImGui::SliderFloat("太阳光照强度##ConstSky", &intensity, 0.1f, 50.0f, "%.1f")) {
+                    PathTracerCore::SetSunIntensity(intensity);
+                }
+
+                float sunSize = PathTracerCore::GetSunAngularSize();
+                if (ImGui::SliderFloat("太阳圆盘大小##ConstSky", &sunSize, 0.002f, 0.05f, "%.4f rad")) {
+                    PathTracerCore::SetSunAngularSize(sunSize);
+                }
             }
         } else {
             ImGui::Spacing();

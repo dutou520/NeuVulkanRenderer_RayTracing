@@ -7,6 +7,8 @@
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
+#include <algorithm>
+#include <cctype>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <Windows.h>
@@ -42,10 +44,16 @@ int main(int argc, char* argv[]) {
         }
 
         LOG_I("Loading initial model: {}", startupModel);
-        if (neurender::PathTracerCore::GetScene().LoadOBJ(startupModel)) {
-            neurender::PathTracerCore::GetCamera().ResetCornellBoxView();
+        if (neurender::PathTracerCore::GetScene().LoadModel(startupModel)) {
+            std::string lower = startupModel;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c){ return std::tolower(c); });
+            if (lower.find("康奈尔") != std::string::npos || lower.find("cornell") != std::string::npos) {
+                neurender::PathTracerCore::GetCamera().ResetCornellBoxView();
+            } else {
+                neurender::PathTracerCore::GetCamera().FrameBounds(neurender::PathTracerCore::GetScene().GetBounds());
+            }
             neurender::PathTracerCore::ResetAccumulation();
-            LOG_I("Cornell Box model loaded and materials initialized.");
+            LOG_I("Initial model loaded successfully.");
         } else {
             LOG_W("Could not load model at startup: {}", startupModel);
         }
@@ -55,6 +63,9 @@ int main(int argc, char* argv[]) {
         // Main Loop
         while (!neurender::Window::ShouldClose()) {
             neurender::Window::PollEvents();
+            if (neurender::Window::ShouldClose()) {
+                break;
+            }
 
             if (neurender::Window::IsMinimized()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));

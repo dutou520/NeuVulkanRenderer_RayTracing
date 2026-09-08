@@ -460,17 +460,34 @@ void Console::Init() {
                 return true;
             }
         }
-        if (args[0] == "sun" && args.size() >= 3) {
-            float el, az;
-            if (ParseFloat(args[1], el) && ParseFloat(args[2], az)) {
-                PathTracerCore::SetSunElevation(el);
-                PathTracerCore::SetSunAzimuth(az);
-                if (args.size() > 3) {
-                    float i;
-                    if (ParseFloat(args[3], i)) PathTracerCore::SetSunIntensity(i);
-                }
-                Console::Print("Sun updated: Elevation=" + std::to_string(el) + " Azimuth=" + std::to_string(az));
+        if (args[0] == "sun") {
+            if (args.size() > 1 && (args[1] == "on" || args[1] == "1" || args[1] == "true" || args[1] == "enable")) {
+                PathTracerCore::SetSunEnabled(true);
+                Console::Print("Sun enabled.");
                 return true;
+            } else if (args.size() > 1 && (args[1] == "off" || args[1] == "0" || args[1] == "false" || args[1] == "disable")) {
+                PathTracerCore::SetSunEnabled(false);
+                Console::Print("Sun disabled.");
+                return true;
+            } else if (args.size() > 2 && args[1] == "size") {
+                float sz;
+                if (ParseFloat(args[2], sz)) {
+                    PathTracerCore::SetSunAngularSize(sz);
+                    Console::Print("Sun angular size set to " + std::to_string(sz));
+                    return true;
+                }
+            } else if (args.size() >= 3) {
+                float el, az;
+                if (ParseFloat(args[1], el) && ParseFloat(args[2], az)) {
+                    PathTracerCore::SetSunElevation(el);
+                    PathTracerCore::SetSunAzimuth(az);
+                    if (args.size() > 3) {
+                        float i;
+                        if (ParseFloat(args[3], i)) PathTracerCore::SetSunIntensity(i);
+                    }
+                    Console::Print("Sun updated: Elevation=" + std::to_string(el) + " Azimuth=" + std::to_string(az));
+                    return true;
+                }
             }
         }
         if (args[0] == "turbidity" && args.size() > 1) {
@@ -493,14 +510,20 @@ void Console::Init() {
         return false;
     });
 
-    RegisterCommand("load", "load model <path>", "加载 OBJ 模型文件", [](const auto& args){
+    RegisterCommand("load", "load model <path>", "加载 3D 模型文件 (支持 .obj, .gltf, .glb)", [](const auto& args){
         if (args.size() < 2 || args[0] != "model") {
-            Console::Print("Usage: load model <path.obj>");
+            Console::Print("Usage: load model <path.obj|path.gltf|path.glb>");
             return false;
         }
         std::string path = args[1];
-        if (PathTracerCore::GetScene().LoadOBJ(path)) {
-            PathTracerCore::GetCamera().ResetCornellBoxView();
+        if (PathTracerCore::GetScene().LoadModel(path)) {
+            std::string lower = path;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c){ return std::tolower(c); });
+            if (lower.find("康奈尔") != std::string::npos || lower.find("cornell") != std::string::npos) {
+                PathTracerCore::GetCamera().ResetCornellBoxView();
+            } else {
+                PathTracerCore::GetCamera().FrameBounds(PathTracerCore::GetScene().GetBounds());
+            }
             PathTracerCore::ResetAccumulation();
             Console::Print("Successfully loaded model: " + path);
             return true;
@@ -528,6 +551,7 @@ void Console::Init() {
         else if (target == "log" || target == "console") EditorGUI::SetWindowFocus("控制台与日志 (Console Log)");
         else if (target == "view" || target == "viewport") EditorGUI::SetWindowFocus("渲染视口 (Viewport)");
         else if (target == "settings" || target == "render") EditorGUI::SetWindowFocus("渲染设置 (Render Settings)");
+        else if (target == "scene" || target == "camera") EditorGUI::SetWindowFocus("场景与相机 (Scene & Camera)");
         return true;
     });
 

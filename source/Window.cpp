@@ -11,15 +11,34 @@ int Window::m_Width = 1600;
 int Window::m_Height = 900;
 std::function<void(int, int)> Window::m_ResizeCallback = nullptr;
 
+static bool SDLCALL CloseEventWatch(void* /*userdata*/, SDL_Event* event) {
+    if (event->type == SDL_EVENT_QUIT || event->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+        Window::Close();
+    }
+    return true;
+}
+
+void Window::Close() {
+    m_ShouldClose = true;
+    if (m_Window) {
+        SDL_HideWindow(m_Window);
+    }
+}
+
 void Window::Init(int width, int height, const char* title) {
     m_Width = width;
     m_Height = height;
     m_ShouldClose = false;
 
+    SDL_SetHint(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "1");
+    SDL_SetHint(SDL_HINT_WINDOWS_CLOSE_ON_ALT_F4, "1");
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         LOG_E("Failed to initialize SDL3: {}", SDL_GetError());
         throw std::runtime_error("SDL3 init failed");
     }
+
+    SDL_AddEventWatch(CloseEventWatch, nullptr);
 
     m_Window = SDL_CreateWindow(
         title,
@@ -38,6 +57,8 @@ void Window::Init(int width, int height, const char* title) {
 }
 
 void Window::Shutdown() {
+    SDL_RemoveEventWatch(CloseEventWatch, nullptr);
+
     if (m_Window) {
         SDL_DestroyWindow(m_Window);
         m_Window = nullptr;
@@ -51,12 +72,8 @@ void Window::PollEvents() {
     while (SDL_PollEvent(&event)) {
         ImGui_ImplSDL3_ProcessEvent(&event);
 
-        if (event.type == SDL_EVENT_QUIT) {
-            m_ShouldClose = true;
-        } else if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
-            if (event.window.windowID == SDL_GetWindowID(m_Window)) {
-                m_ShouldClose = true;
-            }
+        if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+            Close();
         } else if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
             if (event.window.windowID == SDL_GetWindowID(m_Window)) {
                 int w, h;
@@ -70,6 +87,11 @@ void Window::PollEvents() {
                 }
             }
         }
+    }
+
+    ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+    if (mainViewport && mainViewport->PlatformRequestClose) {
+        Close();
     }
 }
 

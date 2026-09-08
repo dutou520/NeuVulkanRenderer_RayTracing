@@ -1,5 +1,6 @@
 #include "Scene.h"
 #include "TextureManager.h"
+#include "GLTFLoader.h"
 #include "neuLog.h"
 
 #define TINYOBJLOADER_IMPLEMENTATION
@@ -12,6 +13,25 @@
 namespace neurender {
 
 Scene::Scene() {
+}
+
+bool Scene::LoadModel(const std::string& filepath) {
+    std::filesystem::path p = std::filesystem::u8path(filepath);
+    std::string ext = p.extension().u8string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
+    if (ext == ".gltf" || ext == ".glb") {
+        return LoadGLTF(filepath);
+    } else {
+        return LoadOBJ(filepath);
+    }
+}
+
+bool Scene::LoadGLTF(const std::string& filepath) {
+    if (neurender::LoadGLTF(filepath, *this)) {
+        m_CurrentModelPath = filepath;
+        return true;
+    }
+    return false;
 }
 
 bool Scene::LoadOBJ(const std::string& filepath) {
@@ -250,6 +270,12 @@ void Scene::ExtractLightTriangles() {
 }
 
 void Scene::RebuildBVH() {
+    m_TotalBounds = AABB{};
+    for (const auto& tri : m_Triangles) {
+        m_TotalBounds.Grow(tri.v0);
+        m_TotalBounds.Grow(tri.v1);
+        m_TotalBounds.Grow(tri.v2);
+    }
     m_BVH.Build(m_Triangles);
     ExtractLightTriangles();
     m_Dirty = true;

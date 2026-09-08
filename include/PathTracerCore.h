@@ -125,6 +125,8 @@ public:
     static glm::vec3 GetGroundAlbedo() { return s_GroundAlbedo; }
     static void SetGroundAlbedo(const glm::vec3& a) { s_GroundAlbedo = a; ResetAccumulation(); }
     static glm::vec3 GetSunDirection();
+    static bool GetSunEnabled() { return s_SunEnabled; }
+    static void SetSunEnabled(bool enabled) { s_SunEnabled = enabled; ResetAccumulation(); }
 
     // UI Scale
     static float GetUIScale() { return s_UIScale; }
@@ -430,6 +432,7 @@ private:
     static float s_RayleighScale;
     static float s_MieTurbidity;
     static glm::vec3 s_GroundAlbedo;
+    static bool s_SunEnabled;
 
     static bool s_BloomEnabled;
     static float s_BloomThreshold;

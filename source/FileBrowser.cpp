@@ -14,6 +14,10 @@ static bool IsImageExtension(const std::string& ext) {
            ext == ".bmp" || ext == ".tga" || ext == ".hdr" || ext == ".webp";
 }
 
+static bool IsModelExtension(const std::string& ext) {
+    return ext == ".obj" || ext == ".gltf" || ext == ".glb";
+}
+
 FileBrowser::FileBrowser() {
     std::string defaultPath = "resource/models";
     if (std::filesystem::exists(std::filesystem::u8path(defaultPath))) {
@@ -137,8 +141,8 @@ void FileBrowser::Render() {
     }
 
     ImGui::SameLine();
-    const char* filters[] = { "OBJ 模型 (*.obj)", "材质 JSON (*.json)", "纹理贴图 (*.png;*.jpg...)", "所有文件 (*.*)" };
-    ImGui::SetNextItemWidth(170);
+    const char* filters[] = { "3D 模型 (*.obj;*.gltf;*.glb)", "材质 JSON (*.json)", "纹理贴图 (*.png;*.jpg...)", "所有文件 (*.*)" };
+    ImGui::SetNextItemWidth(185);
     if (ImGui::Combo("##Filter", &m_FilterIndex, filters, 4)) {
         // filter changed
     }
@@ -210,7 +214,7 @@ void FileBrowser::RenderFileListPanel(float width) {
 
             // Apply filter
             if (!isDir) {
-                if (m_FilterIndex == 0 && ext != ".obj") continue;
+                if (m_FilterIndex == 0 && !IsModelExtension(ext)) continue;
                 if (m_FilterIndex == 1 && ext != ".json") continue;
                 if (m_FilterIndex == 2 && !IsImageExtension(ext)) continue;
             }
@@ -270,7 +274,7 @@ void FileBrowser::RenderFileListPanel(float width) {
 
         ImGui::Text("已选: %s", filename.c_str());
         ImGui::SameLine();
-        if (ext == ".obj") {
+        if (IsModelExtension(ext)) {
             if (ImGui::Button("加载选中模型", ImVec2(120, 0))) {
                 if (m_OnSelectedCallback) {
                     m_OnSelectedCallback(m_SelectedFile);
@@ -438,8 +442,14 @@ void FileBrowser::RenderPreviewPanel() {
         std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
 
         ImGui::Spacing();
-        if (ext == ".obj") {
-            ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[3D 模型文件] (Wavefront OBJ)");
+        if (IsModelExtension(ext)) {
+            if (ext == ".obj") {
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[3D 模型文件] (Wavefront OBJ)");
+            } else if (ext == ".glb") {
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[3D 模型文件] (glTF Binary .glb)");
+            } else {
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[3D 模型文件] (glTF Model .gltf)");
+            }
             ImGui::Text("文件名: %s", filename.c_str());
             try {
                 auto sz = std::filesystem::file_size(selPath);

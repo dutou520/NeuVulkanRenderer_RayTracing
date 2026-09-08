@@ -14,7 +14,7 @@ public:
     static void Shutdown();
     static void PollEvents();
     static bool ShouldClose() { return m_ShouldClose; }
-    static void Close() { m_ShouldClose = true; }
+    static void Close();
 
     static SDL_Window* GetNativeWindow() { return m_Window; }
     static int GetWidth() { return m_Width; }

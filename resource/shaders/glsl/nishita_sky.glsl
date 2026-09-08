@@ -37,7 +37,17 @@ float MiePhase(float cosTheta, float g) {
     return (1.0 / (4.0 * SKY_PI)) * (1.0 - g2) / pow(max(denom, 0.0001), 1.5);
 }
 
-vec3 EvaluateNishitaSky(vec3 rayDir, vec3 sunDir, float sunIntensity, float rayleighScale, float mieTurbidity, float sunAngularSize, vec3 groundAlbedo) {
+vec3 GetSunTransmittance(vec3 sunDir, float rayleighScale, float mieTurbidity) {
+    float sunY = max(sunDir.y, 0.02);
+    float hr = RAYLEIGH_SCALE_HEIGHT / sunY;
+    float hm = MIE_SCALE_HEIGHT / sunY;
+    vec3 betaRay = BETA_RAYLEIGH_BASE * max(0.01, rayleighScale);
+    vec3 betaMie = BETA_MIE_EXTINCTION_BASE * max(0.0, mieTurbidity);
+    vec3 tau = betaRay * hr + betaMie * hm;
+    return exp(-tau);
+}
+
+vec3 EvaluateNishitaSky(vec3 rayDir, vec3 sunDir, float sunIntensity, float rayleighScale, float mieTurbidity, float sunAngularSize, vec3 groundAlbedo, float sunEnabled) {
     // Observer at ground level (10 meters above Earth surface)
     vec3 orig = vec3(0.0, EARTH_RADIUS + 10.0, 0.0);
 
@@ -49,10 +59,10 @@ vec3 EvaluateNishitaSky(vec3 rayDir, vec3 sunDir, float sunIntensity, float rayl
     float tMin = max(0.0, t0);
     float tMax = t1;
 
-    // Check if ray hits Earth ground
+    // Check if ray hits Earth ground (forward intersection)
     float tg0, tg1;
-    bool hitGround = RayAtmosphereIntersect(orig, rayDir, EARTH_RADIUS, tg0, tg1);
-    if (hitGround && tg0 > 0.0) {
+    bool hitGround = RayAtmosphereIntersect(orig, rayDir, EARTH_RADIUS, tg0, tg1) && tg0 > 0.0;
+    if (hitGround) {
         tMax = min(tMax, tg0);
     }
 
@@ -126,23 +136,27 @@ vec3 EvaluateNishitaSky(vec3 rayDir, vec3 sunDir, float sunIntensity, float rayl
 
     vec3 skyRadiance = sunIntensity * (sumRayleigh * betaRayleigh * pR + sumMie * betaMieScatter * pM);
 
-    // Sun Disk
-    if (!hitGround && cosTheta > 0.0) {
+    // Sun Disk (only when sunEnabled > 0.5)
+    if (sunEnabled > 0.5 && !hitGround && cosTheta > 0.0) {
         float sunAngle = max(0.001, sunAngularSize);
         float minCosSun = cos(sunAngle);
         if (cosTheta > minCosSun) {
             // Direct sun disk attenuated by total view atmosphere
             vec3 sunTau = betaRayleigh * optDepthR + betaMieExtinction * optDepthM;
             vec3 sunAtten = exp(-sunTau);
-            float diskIntensity = smoothstep(minCosSun, minCosSun + 0.0001, cosTheta);
-            skyRadiance += sunAtten * (sunIntensity * 25.0) * diskIntensity;
+            float diskIntensity = smoothstep(minCosSun, minCosSun + (1.0 - minCosSun) * 0.1, cosTheta);
+            skyRadiance += sunAtten * (sunIntensity * 60.0) * diskIntensity;
         }
     }
 
     // Ground illumination
-    if (hitGround && tg0 > 0.0) {
+    if (hitGround) {
         skyRadiance = groundAlbedo * max(0.0, sunDir.y) * sunIntensity * 0.05;
     }
 
     return max(vec3(0.0), skyRadiance);
+}
+
+vec3 EvaluateNishitaSky(vec3 rayDir, vec3 sunDir, float sunIntensity, float rayleighScale, float mieTurbidity, float sunAngularSize, vec3 groundAlbedo) {
+    return EvaluateNishitaSky(rayDir, sunDir, sunIntensity, rayleighScale, mieTurbidity, sunAngularSize, groundAlbedo, 1.0);
 }

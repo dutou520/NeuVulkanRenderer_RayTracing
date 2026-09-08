@@ -19,7 +19,11 @@ class Scene {
 public:
     Scene();
 
+    bool LoadModel(const std::string& filepath);
     bool LoadOBJ(const std::string& filepath);
+    bool LoadGLTF(const std::string& filepath);
+
+    void SetCurrentModelPath(const std::string& path) { m_CurrentModelPath = path; }
 
     const std::vector<SceneObject>& GetObjects() const { return m_Objects; }
     std::vector<SceneObject>& GetObjects() { return m_Objects; }
