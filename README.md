@@ -10,8 +10,11 @@
 
 ## 更新日志 (Changelog)
 
-### v1.2.0（2026-09-07）
-- **随机数生成质量大幅提升**：引入 Murmur3 哈希（`murmur3Mix` + `initRng`）对 PCG4D 初始 seed 进行打散，消除低 SPP（1–4帧）下的结构性噪声条纹 Pattern。
+### v1.2.0（2026-09-08）
+- **GLTF 2.0 模型加载支持**：集成 `tinygltf` 库，支持 `.gltf` 与 `.glb` 3D 模型格式解析与导入，支持网格几何体、PBR 材质（Base Color / Metallic-Roughness / Normal 贴图）及纹理坐标自动绑定。
+- **相机控制逻辑优化**：改进相机移动与视角平滑漫游逻辑，提升交互操控体验。
+- **窗口事件与退出处理优化**：完善 SDL 窗口关闭事件流，确保图形管线与 Vulkan 资源优雅释放。
+- **随机数生成质量大幅提升**：引入 Murmur3 哈希（`murmur3Mix` + `initRng`）对 PCG4D 初始 seed 进行打散，彻底消除低 SPP（1–4帧）下的结构性噪声条纹 Pattern。
 
 ### v1.1.0
 - 硬件 RTX 光追管线（`VK_KHR_ray_tracing_pipeline`）、原生显示器 HDR 输出（ScRGB / HDR10）。
@@ -53,7 +56,7 @@
 
 ### 5. 交互式编辑器与工具 (Editor & Tooling)
 - **Docking 布局与界面**：集成 Dear ImGui 与 SDL3，支持面板自由停靠、材质实时编辑、场景树管理。
-- **内置模型与文件浏览器**：自带 Wavefront OBJ 加载器与内置文件浏览器，支持一键切换预设康奈尔盒（Cornell Box）模型。
+- **内置模型与文件浏览器**：自带 Wavefront OBJ 与 GLTF 2.0 (.gltf / .glb) 模型加载器，内置可视化文件浏览器，支持一键切换预设康奈尔盒（Cornell Box）模型与自定义模型导入。
 - **双模式相机控制器**：支持第一人称自由漫游（WASD + QE + 鼠标右键）与观察视角（Orbit）。
 - **实用工具**：集成 spdlog 运行时控制台输出、视口 HDR/PNG 一键截图导出。
 
@@ -68,6 +71,7 @@
 | **Dear ImGui (Docking)** | 运行时图形用户交互界面 |
 | **GLM** | 向量与矩阵数学库 |
 | **spdlog / fmt** | 高性能日志与格式化输出 |
+| **tinygltf** | GLTF 2.0 3D 模型格式解析（单头文件） |
 | **tinyobjloader** | OBJ 3D 模型格式解析（单头文件） |
 | **stb_image / stb_image_write** | 贴图加载与截图导出（单头文件） |
 | **nlohmann/json** | 配置与数据序列化（单头文件） |
